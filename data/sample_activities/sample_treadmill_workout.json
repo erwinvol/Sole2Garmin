@@ -1,0 +1,20 @@
+{
+  "id": "sole_workout_20261013_01",
+  "name": "Sole F80 5K Treadmill Tempo",
+  "date": "2026-10-13T10:30:00Z",
+  "machine_type": "treadmill",
+  "duration": 1800,
+  "distance": 5.0,
+  "distance_unit": "km",
+  "calories": 420,
+  "avg_speed": 10.0,
+  "max_speed": 12.0,
+  "speed_unit": "kmh",
+  "avg_heart_rate": 152,
+  "max_heart_rate": 168,
+  "avg_cadence": 166,
+  "max_cadence": 174,
+  "avg_incline": 1.5,
+  "max_incline": 3.0,
+  "elevation_gain": 75.0
+}

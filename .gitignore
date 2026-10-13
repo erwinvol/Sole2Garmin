@@ -1,0 +1,23 @@
+# Environment and credentials
+.env
+
+# Data and SQLite
+data/sync_state.db
+data/sync_state.db-*
+data/garmin_tokens/
+data/sole_tokens/
+
+# Python cache & virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary files
+*.fit
+*.tmp
+.DS_Store

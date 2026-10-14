@@ -144,7 +144,18 @@ class SoleClient:
                 else:
                     last_error = f"HTTP {response.status_code}: {response.text[:120]}"
             except RequestException as exc:
-                last_error = str(exc)
+                err_msg = str(exc)
+                if "Failed to resolve" in err_msg or "NameResolutionError" in err_msg or "Errno -2" in err_msg:
+                    from urllib.parse import urlparse
+                    host = urlparse(endpoint).hostname or self.base_url
+                    last_error = (
+                        f"Cannot resolve host '{host}'. Dyaco / SOLE+ does not publish a public DNS "
+                        f"record for '{host}'. If you have captured the production endpoint using a proxy "
+                        f"(mitmproxy / HTTP Toolkit), set SOLE_BASE_URL in your .env file. "
+                        f"Falling back to local workout files in '{self.sample_dir}'."
+                    )
+                    break
+                last_error = err_msg
 
         logger.warning("Could not authenticate against SOLE+ cloud (%s).", last_error)
         return False
@@ -347,6 +358,7 @@ class SoleClient:
                         if norm:
                             results.append(norm)
                 elif isinstance(content, dict):
+                    # Check if multi-workout container or single workout
                     items = content.get("data") or content.get("workouts") or [content]
                     for item in items:
                         norm = self._normalize_activity(item)

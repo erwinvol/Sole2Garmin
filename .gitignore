@@ -5,6 +5,7 @@
 data/sync_state.db
 data/sync_state.db-*
 data/garmin_tokens/
+data/strava_tokens/
 data/sole_tokens/
 
 # Python cache & virtualenv

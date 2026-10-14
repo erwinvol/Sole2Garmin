@@ -5,10 +5,15 @@ services:
     container_name: sole2garmin
     restart: unless-stopped
     environment:
-      # SOLE+ / Dyaco Credentials
-      - SOLE_EMAIL=your_sole_email@example.com
-      - SOLE_PASSWORD=your_sole_password
-      - SOLE_BASE_URL=https://api.dyaco.com/v1
+      # Ingestion Provider: strava (recommended) or cloud
+      - INGESTION_PROVIDER=strava
+
+      # Strava API Credentials (SOLE+ auto-syncs to Strava -> Sole2Garmin -> Garmin Connect)
+      # Create your free API app at https://www.strava.com/settings/api
+      - STRAVA_CLIENT_ID=your_strava_client_id
+      - STRAVA_CLIENT_SECRET=your_strava_client_secret
+      - STRAVA_REFRESH_TOKEN=your_strava_refresh_token
+      - STRAVA_FILTER_SOLE_ONLY=true
 
       # Garmin Connect Credentials (optional if tokens exist in data/garmin_tokens)
       - GARMIN_USERNAME=your_garmin_email@example.com
@@ -17,7 +22,7 @@ services:
       # Storage directories inside container
       - DATA_DIR=/data
       - GARMIN_TOKEN_DIR=/data/garmin_tokens
-      - SOLE_TOKEN_DIR=/data/sole_tokens
+      - STRAVA_TOKEN_DIR=/data/strava_tokens
       - SAMPLE_DIR=/data/sample_activities
 
       # Sync Configuration (Default: 60 minutes)
@@ -26,7 +31,7 @@ services:
       - CHECK_DUPLICATES=true
       - DUPLICATE_THRESHOLD_HOURS=2
 
-      # FIT Device Spoofing (Garmin Epix Gen 2: 3943; Forerunner 965: 4315; Edge 1040 for bikes: 3927)
+      # FIT Device Spoofing (Garmin Epix Gen 2: 3943; Forerunner 965: 4315; Edge 1040: 3927)
       - SPOOF_GARMIN_DEVICE=true
       - DEVICE_PRODUCT_ID=3943
       - DEVICE_SOFTWARE_VERSION=18.16

@@ -19,7 +19,17 @@ logger = logging.getLogger(__name__)
 class Config:
     """Application configuration loaded from environment variables."""
 
-    # Sole Credentials & API configuration
+    # Ingestion Provider: "strava" (default & recommended), "cloud" (Dyaco), or "local" (drop folder)
+    ingestion_provider: str = "strava"
+
+    # Strava API Credentials & Settings (Option 1)
+    strava_client_id: str = ""
+    strava_client_secret: str = ""
+    strava_refresh_token: str = ""
+    strava_token_dir: Path = Path("data/strava_tokens")
+    strava_filter_sole_only: bool = True
+
+    # Sole / Dyaco Credentials & API configuration (Option 2)
     sole_email: str = ""
     sole_password: str = ""
     sole_base_url: str = "https://api.dyaco.com/v1"
@@ -59,6 +69,9 @@ class Config:
         garmin_token_dir_env = os.getenv("GARMIN_TOKEN_DIR")
         garmin_token_dir = Path(garmin_token_dir_env) if garmin_token_dir_env else data_dir / "garmin_tokens"
 
+        strava_token_dir_env = os.getenv("STRAVA_TOKEN_DIR")
+        strava_token_dir = Path(strava_token_dir_env) if strava_token_dir_env else data_dir / "strava_tokens"
+
         sole_token_dir_env = os.getenv("SOLE_TOKEN_DIR")
         sole_token_dir = Path(sole_token_dir_env) if sole_token_dir_env else data_dir / "sole_tokens"
 
@@ -66,6 +79,12 @@ class Config:
         sample_dir = Path(sample_dir_env) if sample_dir_env else data_dir / "sample_activities"
 
         return cls(
+            ingestion_provider=os.getenv("INGESTION_PROVIDER", "strava").lower(),
+            strava_client_id=os.getenv("STRAVA_CLIENT_ID", ""),
+            strava_client_secret=os.getenv("STRAVA_CLIENT_SECRET", ""),
+            strava_refresh_token=os.getenv("STRAVA_REFRESH_TOKEN", ""),
+            strava_token_dir=strava_token_dir,
+            strava_filter_sole_only=os.getenv("STRAVA_FILTER_SOLE_ONLY", "true").lower() in ("true", "1", "yes"),
             sole_email=os.getenv("SOLE_EMAIL", ""),
             sole_password=os.getenv("SOLE_PASSWORD", ""),
             sole_base_url=os.getenv("SOLE_BASE_URL", "https://api.dyaco.com/v1").rstrip("/"),
@@ -89,7 +108,11 @@ class Config:
 
     def validate(self) -> None:
         """Validate required configuration values."""
-        if not self.sole_email and not self.sample_dir.exists():
-            logger.warning("SOLE_EMAIL not set. The service requires credentials or local sample activities.")
+        if self.ingestion_provider == "strava":
+            if not self.strava_refresh_token and not any(self.strava_token_dir.glob("*.json")):
+                logger.warning("STRAVA_REFRESH_TOKEN not set. Set STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, and STRAVA_REFRESH_TOKEN.")
+        elif self.ingestion_provider == "cloud":
+            if not self.sole_email and not self.sample_dir.exists():
+                logger.warning("SOLE_EMAIL not set and no sample directory found.")
         if not self.garmin_username and not any(self.garmin_token_dir.glob("*")):
             logger.warning("GARMIN_USERNAME not set and no cached Garmin tokens found.")

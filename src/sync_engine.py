@@ -8,30 +8,50 @@ from src.config import Config
 from src.fit_builder import FitBuilder
 from src.garmin_client import GarminClient, format_local_datetime, parse_activity_datetime
 from src.sole_client import SoleClient
+from src.strava_client import StravaClient
 from src.sync_store import SyncStore
 
 logger = logging.getLogger(__name__)
 
 
 class SyncEngine:
-    """Coordinates fetching from SOLE+, FIT generation/patching, and uploading to Garmin Connect."""
+    """Coordinates fetching from Sole/Strava, FIT generation/patching, and uploading to Garmin Connect."""
 
     def __init__(
         self,
         config: Config,
-        sole: Optional[SoleClient] = None,
+        source: Optional[Any] = None,
+        sole: Optional[Any] = None,
         garmin: Optional[GarminClient] = None,
         builder: Optional[FitBuilder] = None,
         store: Optional[SyncStore] = None,
     ):
         self.config = config
-        self.sole = sole or SoleClient(
-            email=config.sole_email,
-            password=config.sole_password,
-            base_url=config.sole_base_url,
-            token_dir=config.sole_token_dir,
-            sample_dir=config.sample_dir,
-        )
+
+        # Determine active ingestion client
+        active_source = source or sole
+        if active_source is None:
+            if config.ingestion_provider == "cloud":
+                active_source = SoleClient(
+                    email=config.sole_email,
+                    password=config.sole_password,
+                    base_url=config.sole_base_url,
+                    token_dir=config.sole_token_dir,
+                    sample_dir=config.sample_dir,
+                )
+            else:
+                active_source = StravaClient(
+                    client_id=config.strava_client_id,
+                    client_secret=config.strava_client_secret,
+                    refresh_token=config.strava_refresh_token,
+                    token_dir=config.strava_token_dir,
+                    filter_sole_only=config.strava_filter_sole_only,
+                    sample_dir=config.sample_dir,
+                )
+
+        self.source = active_source
+        self.sole = self.source  # Backward compatibility alias
+
         self.garmin = garmin or GarminClient(
             username=config.garmin_username,
             password=config.garmin_password,
@@ -63,7 +83,8 @@ class SyncEngine:
         """
         batch_limit = 1 if sync_latest else (limit or self.config.sync_batch_size)
         logger.info(
-            "Starting sync run (batch limit: %d, sync_latest: %s, dry_run: %s)...",
+            "Starting sync run [Provider: %s] (batch limit: %d, sync_latest: %s, dry_run: %s)...",
+            self.config.ingestion_provider.upper(),
             batch_limit,
             sync_latest,
             dry_run,
@@ -77,12 +98,12 @@ class SyncEngine:
             "failed": 0,
         }
 
-        # Step 1: Fetch activities from SOLE+ / Dyaco
+        # Step 1: Fetch activities from active provider
         try:
             query_limit = 5 if sync_latest else batch_limit
-            activities = self.sole.get_activities(limit=query_limit)
+            activities = self.source.get_activities(limit=query_limit)
         except Exception as exc:
-            logger.exception("Failed to retrieve activities from Sole: %s", exc)
+            logger.exception("Failed to retrieve activities from %s: %s", self.config.ingestion_provider, exc)
             stats["failed"] += 1
             return stats
 
@@ -98,7 +119,7 @@ class SyncEngine:
 
         stats["total_found"] = len(activities)
         if not activities:
-            logger.info("No activities returned from Sole.")
+            logger.info("No activities returned from %s provider.", self.config.ingestion_provider)
             return stats
 
         activities_to_process = activities if sync_latest else list(reversed(activities))
@@ -178,7 +199,7 @@ class SyncEngine:
                         activity_date=act_date,
                         sport=sport,
                         status="UPLOADED",
-                        notes=f"Device: Product ID {self.config.device_product_id}",
+                        notes=f"Device: Epix Gen 2 (Product {self.config.device_product_id})",
                     )
                     stats["uploaded"] += 1
 

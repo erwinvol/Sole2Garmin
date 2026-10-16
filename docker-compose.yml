@@ -5,15 +5,19 @@ services:
     container_name: sole2garmin
     restart: unless-stopped
     environment:
-      # Ingestion Provider: strava (recommended) or cloud
-      - INGESTION_PROVIDER=strava
+      # Ingestion Provider: cloud (Sole / Dyaco API), strava, or local
+      - INGESTION_PROVIDER=cloud
 
-      # Strava API Credentials (SOLE+ auto-syncs to Strava -> Sole2Garmin -> Garmin Connect)
-      # Create your free API app at https://www.strava.com/settings/api
-      - STRAVA_CLIENT_ID=your_strava_client_id
-      - STRAVA_CLIENT_SECRET=your_strava_client_secret
-      - STRAVA_REFRESH_TOKEN=your_strava_refresh_token
-      - STRAVA_FILTER_SOLE_ONLY=true
+      # Sole / Dyaco Credentials (Option B: Direct SOLE+ Cloud API)
+      - SOLE_EMAIL=your_sole_email@example.com
+      - SOLE_PASSWORD=your_sole_password
+      - SOLE_BASE_URL=https://api.dyaco.com/v1
+
+      # (Optional) Strava Credentials (if using Strava bridge instead)
+      # - STRAVA_CLIENT_ID=your_strava_client_id
+      # - STRAVA_CLIENT_SECRET=your_strava_client_secret
+      # - STRAVA_REFRESH_TOKEN=your_strava_refresh_token
+      # - STRAVA_FILTER_SOLE_ONLY=true
 
       # Garmin Connect Credentials (optional if tokens exist in data/garmin_tokens)
       - GARMIN_USERNAME=your_garmin_email@example.com

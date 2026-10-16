@@ -20,6 +20,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.device_product_id, 3943)  # Epix Gen 2
         self.assertEqual(config.default_sport, "RUNNING")
         self.assertEqual(config.default_sub_sport, "TREADMILL")
+        self.assertEqual(config.ingestion_provider, "cloud")
 
     @patch.dict(os.environ, {
         "SOLE_EMAIL": "runner@example.com",
@@ -43,6 +44,14 @@ class TestConfig(unittest.TestCase):
         self.assertFalse(config.check_duplicates)
         self.assertEqual(config.default_sport, "CYCLING")
         self.assertEqual(config.default_sub_sport, "INDOOR_CYCLING")
+        self.assertEqual(config.ingestion_provider, "cloud")
+
+    @patch.dict(os.environ, {
+        "INGESTION_PROVIDER": "strava",
+    })
+    def test_from_env_provider_override(self):
+        config = Config.from_env()
+        self.assertEqual(config.ingestion_provider, "strava")
 
 
 if __name__ == "__main__":

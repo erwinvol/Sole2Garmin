@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 class Config:
     """Application configuration loaded from environment variables."""
 
-    # Ingestion Provider: "strava" (default & recommended), "cloud" (Dyaco), or "local" (drop folder)
-    ingestion_provider: str = "strava"
+    # Ingestion Provider: "cloud" (Dyaco / SOLE+ API), "strava", or "local" (drop folder)
+    ingestion_provider: str = "cloud"
 
     # Strava API Credentials & Settings (Option 1)
     strava_client_id: str = ""
@@ -79,7 +79,7 @@ class Config:
         sample_dir = Path(sample_dir_env) if sample_dir_env else data_dir / "sample_activities"
 
         return cls(
-            ingestion_provider=os.getenv("INGESTION_PROVIDER", "strava").lower(),
+            ingestion_provider=os.getenv("INGESTION_PROVIDER", "cloud").lower(),
             strava_client_id=os.getenv("STRAVA_CLIENT_ID", ""),
             strava_client_secret=os.getenv("STRAVA_CLIENT_SECRET", ""),
             strava_refresh_token=os.getenv("STRAVA_REFRESH_TOKEN", ""),

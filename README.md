@@ -1,6 +1,6 @@
 # Sole2Garmin 🏃‍♂️💨 ➡️ ⌚
 
-Automated sync service that bridges workouts from **Sole Fitness** (treadmills, ellipticals, bikes via the SOLE+ app's native Strava sync), captures second-by-second telemetry streams, compiles them into enhanced `.fit` files with native **Garmin Epix Gen 2** (or **Forerunner 965**) device signatures, and uploads them directly to **Garmin Connect** to unlock full Garmin **Physio TrueUp** (Training Load, Running Training Effect, Running VO2 Max, and Recovery Time).
+Automated sync service that bridges workouts from **Sole Fitness equipment** (treadmills, ellipticals, bikes via the SOLE+ / Dyaco cloud API or drop folder), captures second-by-second telemetry, compiles enhanced `.fit` files with native **Garmin Epix Gen 2** (or **Forerunner 965**) device signatures, and uploads them directly to **Garmin Connect** to unlock full Garmin **Physio TrueUp** (Training Load, Running Training Effect, Running VO2 Max, and Recovery Time).
 
 Packaged as a lightweight, containerized Docker service suitable for running on home servers, NAS devices (Synology, Unraid, TrueNAS), Raspberry Pis, or any system with Docker.
 
@@ -9,14 +9,14 @@ Packaged as a lightweight, containerized Docker service suitable for running on 
 ## 🌟 Key Features
 
 * **🔄 Automated Synchronization**: Set-and-forget background daemon polling at configurable intervals (e.g., every 60 minutes).
-* **🌉 Seamless Strava Intermediary Bridge**: Leverages the official SOLE+ app's native auto-sync (`Settings -> Health Apps -> Strava`). When you step off your Sole treadmill, the workout syncs to Strava, and **Sole2Garmin** retrieves the full telemetry streams to build a native Garmin activity.
+* **☁️ Direct SOLE+ / Dyaco Cloud API**: Connects directly to your SOLE+ user account using your login credentials (`SOLE_EMAIL` & `SOLE_PASSWORD`), discovering recent workouts and telemetry.
 * **🎯 Garmin Physio TrueUp & Running Metrics**: Third-party manual uploads do not award Running Training Effect or VO2 Max. **Sole2Garmin** compiles workouts using `fit-tool` with Garmin multisport device signatures (defaulting to **Garmin Epix Gen 2** Product ID `3943` or **Forerunner 965** Product ID `4315`), unlocking full physiological training metrics in Garmin Connect.
 * **⛰️ Incline & Elevation Modeling**: Converts treadmill incline percentages into realistic grade and cumulative vertical ascent streams ($\Delta \text{altitude} = \Delta \text{distance} \times \frac{\text{incline}\%}{100}$), ensuring hill workouts reflect total elevation gain.
 * **🛡️ Multi-Tier Duplicate Prevention**:
   1. **Persistent SQLite Store**: Remembers synced activity IDs across reboots and container restarts.
   2. **Garmin Connect Time Window**: Checks Garmin Connect for activities matching within a $\pm 2$-hour window (preventing duplicates if you also recorded with your watch).
   3. **HTTP 409 Conflict Protection**: Gracefully catches Garmin's upload duplicate response.
-* **🔑 Secure Token Caching**: Stores Garmin session tokens in `data/garmin_tokens` and Strava OAuth tokens in `data/strava_tokens` with automatic refresh.
+* **🔑 Secure Token Caching**: Stores Garmin session tokens in `data/garmin_tokens` and SOLE session tokens in `data/sole_tokens` with automatic refresh.
 * **📁 Offline & Drop-Folder Support**: Supports reading sample or dropped `.json` and raw `.fit` files from `data/sample_activities` for local manual uploads or offline testing.
 * **🐳 Docker & Docker Compose Ready**: Single-command startup with minimal resource overhead and only a single volume mount (`./data:/data`).
 
@@ -33,15 +33,15 @@ Packaged as a lightweight, containerized Docker service suitable for running on 
                  ▼
 ┌─────────────────────────────────┐
 │           SOLE+ App             │
-│   (Settings -> Health -> Strava)│
+│       (Auto-Sync to Cloud)      │
 └────────────────┬────────────────┘
-                 │ Auto-Sync
+                 │ Cloud Sync
                  ▼
 ┌─────────────────────────────────┐
-│          Strava Cloud           │
-│   - Activities & Streams API    │
+│     Dyaco / SOLE+ Cloud API     │
+│   - User Workouts & Records     │
 └────────────────┬────────────────┘
-                 │ Telemetry Streams
+                 │ Workout Telemetry
                  ▼
 ┌─────────────────────────────────┐
 │       FIT Binary Builder        │
@@ -68,36 +68,11 @@ Packaged as a lightweight, containerized Docker service suitable for running on 
 
 ---
 
-## 🔑 Getting Your Strava API Credentials (1-Time Setup)
-
-1. Log into [Strava](https://www.strava.com).
-2. Go to [Strava API Settings](https://www.strava.com/settings/api).
-3. Create a free API application (e.g., Application Name: `Sole2Garmin`, Category: `Personal`, Website: `http://localhost`).
-4. Note your **Client ID** and **Client Secret**.
-5. Generate an initial refresh token with activity read permissions (`activity:read_all`):
-   - In your browser, open this authorization URL (replace `YOUR_CLIENT_ID`):
-     ```
-     https://www.strava.com/oauth/authorize?client_id=YOUR_CLIENT_ID&response_type=code&redirect_uri=http://localhost&approval_prompt=force&scope=read,activity:read_all
-     ```
-   - Click **Authorize**. Your browser will redirect to `http://localhost/?state=&code=AUTHORIZATION_CODE&scope=read,activity:read_all`.
-   - Copy the `AUTHORIZATION_CODE` from the URL.
-   - Exchange it for a refresh token using `curl`:
-     ```bash
-     curl -X POST https://www.strava.com/oauth/token \
-       -F client_id=YOUR_CLIENT_ID \
-       -F client_secret=YOUR_CLIENT_SECRET \
-       -F code=AUTHORIZATION_CODE \
-       -F grant_type=authorization_code
-     ```
-   - In the JSON response, copy the `refresh_token`.
-
----
-
 ## 🚀 Quick Start with Docker Compose (Recommended)
 
 ### 1. Configure `docker-compose.yml`
 
-Edit `docker-compose.yml` directly under the `environment:` section:
+Edit `docker-compose.yml` directly under the `environment:` section with your Sole and Garmin credentials:
 
 ```yaml
 services:
@@ -107,14 +82,13 @@ services:
     container_name: sole2garmin
     restart: unless-stopped
     environment:
-      # Ingestion Provider
-      - INGESTION_PROVIDER=strava
+      # Ingestion Provider: cloud (Sole Fitness / Dyaco API)
+      - INGESTION_PROVIDER=cloud
 
-      # Strava API Credentials
-      - STRAVA_CLIENT_ID=your_client_id
-      - STRAVA_CLIENT_SECRET=your_client_secret
-      - STRAVA_REFRESH_TOKEN=your_refresh_token
-      - STRAVA_FILTER_SOLE_ONLY=true
+      # Sole / Dyaco Credentials
+      - SOLE_EMAIL=your_sole_email@example.com
+      - SOLE_PASSWORD=your_sole_password
+      - SOLE_BASE_URL=https://api.dyaco.com/v1
 
       # Garmin Connect Credentials
       - GARMIN_USERNAME=your_garmin_email@example.com
@@ -123,7 +97,8 @@ services:
       # Storage directories
       - DATA_DIR=/data
       - GARMIN_TOKEN_DIR=/data/garmin_tokens
-      - STRAVA_TOKEN_DIR=/data/strava_tokens
+      - SOLE_TOKEN_DIR=/data/sole_tokens
+      - SAMPLE_DIR=/data/sample_activities
 
       # Sync interval (minutes)
       - SYNC_INTERVAL_MINUTES=60
@@ -138,11 +113,22 @@ services:
 docker compose up -d
 ```
 
-View the logs in real time:
+### 3. Inspecting Logs
 
 ```bash
 docker compose logs -f
 ```
+
+---
+
+## 💡 Dyaco / SOLE+ Endpoint Configuration
+
+By default, `Sole2Garmin` targets `https://api.dyaco.com/v1`. If your mobile app connects to a region-specific or AWS gateway domain, you can specify the exact URL using `SOLE_BASE_URL`:
+
+1. On Android, run a capture tool like **PCAPdroid** (free, no root required) or **HTTP Toolkit**.
+2. Open the **SOLE+** app and pull down to refresh workout history.
+3. Note the API domain in the request list and set `SOLE_BASE_URL=https://<domain>/v1` in your `docker-compose.yml` or `.env` file.
+4. **Local Drop Folder Fallback**: If cloud connectivity is temporarily unavailable, dropping `.fit` or `.json` files into `./data/sample_activities/` will immediately be processed, device-spoofed, and uploaded to Garmin.
 
 ---
 
@@ -152,16 +138,15 @@ All settings can be configured via `docker-compose.yml`, environment variables, 
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `INGESTION_PROVIDER` | `strava` | Ingestion mode: `strava` (recommended), `cloud`, or `local` |
-| `STRAVA_CLIENT_ID` | *Required* | Your Strava API Client ID |
-| `STRAVA_CLIENT_SECRET` | *Required* | Your Strava API Client Secret |
-| `STRAVA_REFRESH_TOKEN` | *Required* | Your Strava initial OAuth Refresh Token |
-| `STRAVA_FILTER_SOLE_ONLY`| `true` | When true, only syncs activities with "Sole" in name or device |
+| `INGESTION_PROVIDER` | `cloud` | Ingestion mode: `cloud` (Sole / Dyaco API), `strava`, or `local` |
+| `SOLE_EMAIL` | *Required* | Your SOLE+ mobile app account email |
+| `SOLE_PASSWORD` | *Required* | Your SOLE+ account password |
+| `SOLE_BASE_URL` | `https://api.dyaco.com/v1` | Dyaco backend API base endpoint |
 | `GARMIN_USERNAME` | *Optional* | Your Garmin Connect email (required if tokens are not yet cached) |
 | `GARMIN_PASSWORD` | *Optional* | Your Garmin Connect password |
 | `DATA_DIR` | `/data` | Root directory for SQLite database and tokens |
 | `GARMIN_TOKEN_DIR` | `/data/garmin_tokens` | Directory storing Garmin session tokens |
-| `STRAVA_TOKEN_DIR` | `/data/strava_tokens` | Directory storing Strava session tokens |
+| `SOLE_TOKEN_DIR` | `/data/sole_tokens` | Directory storing SOLE session tokens |
 | `SAMPLE_DIR` | `/data/sample_activities` | Directory for drop-folder / sample activity JSON or FIT files |
 | `SYNC_INTERVAL_MINUTES`| `60` | Polling frequency in minutes when running in daemon mode |
 | `SYNC_BATCH_SIZE` | `10` | Max recent activities to evaluate per cycle |

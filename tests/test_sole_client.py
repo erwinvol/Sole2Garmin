@@ -184,7 +184,8 @@ class TestSoleClient(unittest.TestCase):
         call_args, call_kwargs = mock_post.call_args
         self.assertEqual(call_args[0], "https://sole-homeplus.dyacocloud.com/api/LoginByEmail")
         self.assertEqual(call_kwargs["json"]["email"], "soleuser@example.com")
-        self.assertEqual(call_kwargs["json"]["pushMessageToken"], "")
+        self.assertTrue(bool(call_kwargs["json"].get("pushToken")))
+        self.assertTrue(bool(call_kwargs["json"].get("pushMessageToken")))
 
         # Verify HeaderInterceptor signature headers sent
         headers = call_kwargs["headers"]

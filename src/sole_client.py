@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -55,6 +56,7 @@ class SoleClient:
         self.refresh_token: Optional[str] = None
         self.token_expiry: float = 0.0
         self.user_id: Optional[str] = None
+        self.push_token: str = f"sole2garmin_fcm_{uuid.uuid4().hex}"
 
         self._load_cached_token()
 
@@ -150,7 +152,8 @@ class SoleClient:
         payload = {
             "email": self.email,
             "password": self.password,
-            "pushMessageToken": "",
+            "pushToken": self.push_token,
+            "pushMessageToken": self.push_token,
         }
 
         # Primary route reverse-engineered from DyacoApiService: POST api/LoginByEmail

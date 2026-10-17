@@ -44,8 +44,8 @@ class SoleClient:
         token_dir: Optional[Path] = None,
         sample_dir: Optional[Path] = None,
     ):
-        self.email = email
-        self.password = password
+        self.email = (email or "").strip()
+        self.password = (password or "").strip()
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.token_dir = token_dir or Path("data/sole_tokens")
         self.sample_dir = sample_dir or Path("data/sample_activities")
@@ -159,8 +159,6 @@ class SoleClient:
         # Primary route reverse-engineered from DyacoApiService: POST api/LoginByEmail
         login_endpoints = [
             f"{self.base_url}/api/LoginByEmail",
-            f"{self.base_url}/auth/login",
-            f"{self.base_url}/user/login",
         ]
 
         last_error = None
@@ -182,6 +180,14 @@ class SoleClient:
                             err_code,
                             data,
                         )
+                        if err_code == 112:
+                            logger.error(
+                                "SOLE+ error 112 (LOGIN_ERR_WRONG_PWD_OR_USERNAME): Invalid account or password. "
+                                "Please verify SOLE_EMAIL and SOLE_PASSWORD. If your SOLE+ account was originally "
+                                "created via 'Sign in with Google' or Apple ID, use the SOLE+ app 'Forgot Password' "
+                                "screen to establish a direct password for %s.",
+                                self.email,
+                            )
                         last_error = f"{err_msg} (ErrorCode: {err_code})"
                         continue
 

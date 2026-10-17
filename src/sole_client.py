@@ -167,6 +167,7 @@ class SoleClient:
 
         payload = {
             "email": self.email,
+            "emailOrUserUuidInIdentityProvider": self.email,
             "password": self.password,
             "pushToken": self.push_token,
             "pushMessageToken": self.push_token,
@@ -293,12 +294,17 @@ class SoleClient:
 
         Reverse-engineered from DyacoApiKt.callIsUserExists:
         POST https://homeglobal.dyacocloud.com/api/IsUserExists
-        Body: {"registerType": 1, "email": email}
+        Body: {"registerType": 1, "emailOrUserUuidInIdentityProvider": email}
         Response: {"success": true, "dataMap": {"data": true}}
         """
         global_url = "https://homeglobal.dyacocloud.com/api/IsUserExists"
         headers = self._get_headers()
-        payload = {"registerType": register_type, "email": self.email}
+        payload = {
+            "registerType": register_type,
+            "email": self.email,
+            "emailOrUserUuidInIdentityProvider": self.email,
+            "brandCode": self.BRAND_CODE,
+        }
         try:
             resp = requests.post(global_url, json=payload, headers=headers, timeout=10)
             logger.info(
@@ -322,12 +328,17 @@ class SoleClient:
 
         Reverse-engineered from LoginFragment$submitLoginByEmail$1:
         POST https://homeglobal.dyacocloud.com/api/GetLoginServerAddress
-        Body: {"registerType": 1, "email": email}
+        Body: {"registerType": 1, "emailOrUserUuidInIdentityProvider": email}
         Response: {"success": true, "dataMap": {"data": "https://..."}}
         """
         global_url = "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress"
         headers = self._get_headers()
-        payload = {"registerType": register_type, "email": self.email}
+        payload = {
+            "registerType": register_type,
+            "email": self.email,
+            "emailOrUserUuidInIdentityProvider": self.email,
+            "brandCode": self.BRAND_CODE,
+        }
         try:
             resp = requests.post(global_url, json=payload, headers=headers, timeout=10)
             logger.info(

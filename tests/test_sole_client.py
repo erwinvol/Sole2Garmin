@@ -168,7 +168,9 @@ class TestSoleClient(unittest.TestCase):
         mock_post.assert_called_once()
         call_args, call_kwargs = mock_post.call_args
         self.assertEqual(call_args[0], "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress")
-        self.assertEqual(call_kwargs["json"], {"registerType": 1, "email": "user@example.com"})
+        self.assertEqual(call_kwargs["json"]["registerType"], 1)
+        self.assertEqual(call_kwargs["json"]["email"], "user@example.com")
+        self.assertEqual(call_kwargs["json"]["emailOrUserUuidInIdentityProvider"], "user@example.com")
 
     @patch("requests.post")
     def test_check_user_exists(self, mock_post):
@@ -188,7 +190,9 @@ class TestSoleClient(unittest.TestCase):
         mock_post.assert_called_once()
         call_args, call_kwargs = mock_post.call_args
         self.assertEqual(call_args[0], "https://homeglobal.dyacocloud.com/api/IsUserExists")
-        self.assertEqual(call_kwargs["json"], {"registerType": 1, "email": "user@example.com"})
+        self.assertEqual(call_kwargs["json"]["registerType"], 1)
+        self.assertEqual(call_kwargs["json"]["email"], "user@example.com")
+        self.assertEqual(call_kwargs["json"]["emailOrUserUuidInIdentityProvider"], "user@example.com")
 
     @patch("requests.post")
     def test_dyaco_cloud_login(self, mock_post):
@@ -233,11 +237,13 @@ class TestSoleClient(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 2)
         gateway_call = mock_post.call_args_list[0]
         self.assertEqual(gateway_call[0][0], "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress")
-        self.assertEqual(gateway_call[1]["json"], {"registerType": 1, "email": "soleuser@example.com"})
+        self.assertEqual(gateway_call[1]["json"]["registerType"], 1)
+        self.assertEqual(gateway_call[1]["json"]["emailOrUserUuidInIdentityProvider"], "soleuser@example.com")
 
         login_call = mock_post.call_args_list[1]
         self.assertEqual(login_call[0][0], "https://sole-homeplus-cluster.dyacocloud.com/api/LoginByEmail")
         self.assertEqual(login_call[1]["json"]["email"], "soleuser@example.com")
+        self.assertEqual(login_call[1]["json"]["emailOrUserUuidInIdentityProvider"], "soleuser@example.com")
         self.assertTrue(bool(login_call[1]["json"].get("pushToken")))
         self.assertTrue(bool(login_call[1]["json"].get("pushMessageToken")))
 

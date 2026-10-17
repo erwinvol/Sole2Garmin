@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -510,6 +511,93 @@ class TestSoleClient(unittest.TestCase):
         self.assertEqual(len(activities), 1)
         self.assertEqual(activities[0]["id"], "uuid-workout-1")
         self.assertEqual(activities[0]["distance_meters"], 5000.0)
+
+    @patch("requests.post")
+    def test_get_activities_login_required_reauth(self, mock_post):
+        """Test automatic recovery and re-login when Dyaco returns LOGIN_REQUIRED(113)."""
+        # Seed an existing cached token
+        self.token_dir.mkdir(parents=True, exist_ok=True)
+        cached_file = self.token_dir / "sole_token.json"
+        with open(cached_file, "w") as f:
+            json.dump({
+                "email": "user@example.com",
+                "session_id": "stale_session_123",
+                "login_token": "stale_token",
+                "expires_at": time.time() + 3600,
+            }, f)
+
+        # 1. First GetUserMonthlyStatistics returns LOGIN_REQUIRED(113)
+        login_required_resp = MagicMock()
+        login_required_resp.status_code = 200
+        login_required_resp.text = '{"success":false,"errorMessage":"LOGIN_REQUIRED(113)","errorCode":113}'
+        login_required_resp.json.return_value = {
+            "success": False,
+            "errorMessage": "LOGIN_REQUIRED(113)",
+            "errorCode": 113,
+            "dataMap": {},
+        }
+
+        # 2. Re-login calls GetLoginServerAddress
+        gateway_resp = MagicMock()
+        gateway_resp.status_code = 200
+        gateway_resp.json.return_value = {
+            "success": True,
+            "dataMap": {"data": "https://sole-homeplus.dyacocloud.com"},
+        }
+
+        # 3. LoginByEmail succeeds
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.headers = {"sessionid": "new_fresh_session"}
+        login_resp.json.return_value = {
+            "success": True,
+            "dataMap": {
+                "loginToken": "fresh_token_123",
+                "data": {"userId": "user_1"},
+            },
+        }
+
+        # 4. Retried GetUserMonthlyStatistics succeeds
+        success_monthly_resp = MagicMock()
+        success_monthly_resp.status_code = 200
+        success_monthly_resp.text = '{"success":true}'
+        success_monthly_resp.json.return_value = {
+            "success": True,
+            "dataMap": {
+                "totalCount": 1,
+                "data": [
+                    {
+                        "year": 2026,
+                        "month": 10,
+                        "workoutList": [
+                            {
+                                "userWorkoutUuid": "uuid-recovered-1",
+                                "startTimeMillis": 1729080000000,
+                                "_machineCategoryType": 1,
+                                "totalTime": 1800,
+                                "totalDistance": 4000.0,
+                                "avgSpeed": 8.0,
+                                "rawDataList": [{"second": 0, "speed": 8.0, "distance": 0.0}],
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+        mock_post.side_effect = [
+            login_required_resp,
+            gateway_resp,
+            login_resp,
+            success_monthly_resp,
+        ]
+
+        client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+        activities = client.get_activities(limit=10)
+
+        self.assertEqual(len(activities), 1)
+        self.assertEqual(activities[0]["id"], "uuid-recovered-1")
+        self.assertEqual(client.session_id, "new_fresh_session")
 
 
 if __name__ == "__main__":

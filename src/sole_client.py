@@ -146,6 +146,8 @@ class SoleClient:
             "sessionId": self.session_id or "",
             "sessionid": self.session_id or "",
         }
+        if self.session_id:
+            headers["Cookie"] = f"sessionid={self.session_id}; sessionId={self.session_id}; JSESSIONID={self.session_id}"
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
             headers["token"] = self.access_token
@@ -407,7 +409,50 @@ class SoleClient:
 
         return activities
 
-    def _fetch_cloud_activities(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def _is_auth_error(self, err_code: Any, err_msg: Any) -> bool:
+        """Determine if Dyaco API response indicates invalid/expired/missing authentication."""
+        s_msg = str(err_msg or "").upper()
+        try:
+            code_int = int(err_code) if err_code is not None else None
+        except (ValueError, TypeError):
+            code_int = None
+
+        return (
+            code_int in (101, 103, 104, 113, 114, 115)
+            or "LOGIN_REQUIRED" in s_msg
+            or "LOGIN" in s_msg
+            or "EXPIRED" in s_msg
+            or "TOKEN" in s_msg
+            or "UNAUTHORIZED" in s_msg
+            or "NOT_LOGIN" in s_msg
+        )
+
+    def _reauthenticate_and_retry(self, limit: int, reason: str = "") -> List[Dict[str, Any]]:
+        """Purge invalid/expired session tokens and attempt fresh login & fetch."""
+        logger.info(
+            "Dyaco session rejected (%s). Purging cached token and re-authenticating...",
+            reason,
+        )
+        self.session_id = None
+        self.access_token = None
+        self.login_token = None
+        self.token_expiry = 0.0
+        try:
+            token_file = self._token_file_path()
+            if token_file.exists():
+                token_file.unlink()
+                logger.debug("Deleted stale cached token file: %s", token_file)
+        except Exception as exc:
+            logger.debug("Failed deleting stale token file: %s", exc)
+
+        if self.login():
+            logger.info("Successfully re-authenticated with SOLE+. Retrying activity fetch...")
+            return self._fetch_cloud_activities(limit=limit, allow_reauth=False)
+        else:
+            logger.warning("Re-authentication failed after auth rejection: %s", reason)
+            return []
+
+    def _fetch_cloud_activities(self, limit: int = 10, allow_reauth: bool = True) -> List[Dict[str, Any]]:
         """Fetch workout list and detailed telemetry from Dyaco cloud endpoints.
 
         Endpoints:
@@ -445,12 +490,8 @@ class SoleClient:
                         data,
                     )
                     # If session/token is invalid or expired, clear session and re-authenticate
-                    if err_code in (101, 103, 104, 114, 115) or "EXPIRED" in str(err_msg).upper() or "TOKEN" in str(err_msg).upper():
-                        logger.info("Dyaco session expired or invalid. Attempting re-login...")
-                        self.session_id = None
-                        self.access_token = None
-                        if self.login():
-                            return self._fetch_cloud_activities(limit=limit)
+                    if allow_reauth and self._is_auth_error(err_code, err_msg):
+                        return self._reauthenticate_and_retry(limit=limit, reason=f"{err_msg} (ErrorCode: {err_code})")
                 beans = data.get("dataMap", {}).get("data") or []
                 if isinstance(beans, list):
                     for bean in beans:
@@ -478,12 +519,16 @@ class SoleClient:
                 if resp.status_code == 200:
                     data = resp.json()
                     if not data.get("success", False):
+                        err_msg = data.get("errorMessage") or data.get("msg")
+                        err_code = data.get("errorCode")
                         logger.warning(
                             "Dyaco GetMyWorkoutDateList returned success=false: %s (ErrorCode: %s, Response: %s)",
-                            data.get("errorMessage") or data.get("msg"),
-                            data.get("errorCode"),
+                            err_msg,
+                            err_code,
                             data,
                         )
+                        if allow_reauth and self._is_auth_error(err_code, err_msg):
+                            return self._reauthenticate_and_retry(limit=limit, reason=f"{err_msg} (ErrorCode: {err_code})")
                     workout_uuids = self._extract_workout_uuids(data)
                     logger.debug("Discovered %d workout UUIDs from GetMyWorkoutDateList.", len(workout_uuids))
                 else:
@@ -500,12 +545,16 @@ class SoleClient:
                 if resp.status_code == 200:
                     data = resp.json()
                     if not data.get("success", False):
+                        err_msg = data.get("errorMessage") or data.get("msg")
+                        err_code = data.get("errorCode")
                         logger.warning(
                             "Dyaco GetMyLatest3MonthWorkoutStatsByActivityType returned success=false: %s (ErrorCode: %s, Response: %s)",
-                            data.get("errorMessage") or data.get("msg"),
-                            data.get("errorCode"),
+                            err_msg,
+                            err_code,
                             data,
                         )
+                        if allow_reauth and self._is_auth_error(err_code, err_msg):
+                            return self._reauthenticate_and_retry(limit=limit, reason=f"{err_msg} (ErrorCode: {err_code})")
                     workout_uuids = self._extract_workout_uuids(data)
                     logger.debug("Discovered %d workout UUIDs from 3-Month stats.", len(workout_uuids))
                 else:

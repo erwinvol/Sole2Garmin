@@ -35,12 +35,14 @@ services:
       - CHECK_DUPLICATES=true
       - DUPLICATE_THRESHOLD_HOURS=2
 
-      # FIT Device Spoofing (Garmin Epix Gen 2: 3943; Forerunner 965: 4315; Edge 1040: 3927)
       - SPOOF_GARMIN_DEVICE=true
       - DEVICE_PRODUCT_ID=3943
       - DEVICE_SOFTWARE_VERSION=18.16
       - DEFAULT_SPORT=RUNNING
       - DEFAULT_SUB_SPORT=TREADMILL
+
+      # Auto Walk vs Run threshold (<= 6.0 km/h: Walking, > 6.0 km/h: Indoor Running)
+      - WALK_RUN_THRESHOLD_KMH=6.0
 
       # Logging level
       - LOG_LEVEL=INFO

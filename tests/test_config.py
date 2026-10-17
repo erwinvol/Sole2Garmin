@@ -20,6 +20,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.device_product_id, 3943)  # Epix Gen 2
         self.assertEqual(config.default_sport, "RUNNING")
         self.assertEqual(config.default_sub_sport, "TREADMILL")
+        self.assertEqual(config.walk_run_threshold_kmh, 6.0)
         self.assertEqual(config.ingestion_provider, "cloud")
 
     @patch.dict(os.environ, {
@@ -32,6 +33,7 @@ class TestConfig(unittest.TestCase):
         "CHECK_DUPLICATES": "false",
         "DEFAULT_SPORT": "CYCLING",
         "DEFAULT_SUB_SPORT": "INDOOR_CYCLING",
+        "WALK_RUN_THRESHOLD_KMH": "5.5",
     })
     def test_from_env(self):
         config = Config.from_env()
@@ -44,6 +46,7 @@ class TestConfig(unittest.TestCase):
         self.assertFalse(config.check_duplicates)
         self.assertEqual(config.default_sport, "CYCLING")
         self.assertEqual(config.default_sub_sport, "INDOOR_CYCLING")
+        self.assertEqual(config.walk_run_threshold_kmh, 5.5)
         self.assertEqual(config.ingestion_provider, "cloud")
 
     @patch.dict(os.environ, {

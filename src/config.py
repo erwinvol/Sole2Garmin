@@ -53,8 +53,14 @@ class Config:
     device_software_version: float = 18.16
 
     # Activity Default Settings
-    default_sport: str = "RUNNING"  # RUNNING, CYCLING, FITNESS_EQUIPMENT
-    default_sub_sport: str = "TREADMILL"  # TREADMILL, INDOOR_RUNNING, ELLIPTICAL, INDOOR_CYCLING
+    default_sport: str = "RUNNING"  # RUNNING, CYCLING, FITNESS_EQUIPMENT, WALKING
+    default_sub_sport: str = "TREADMILL"  # TREADMILL, INDOOR_RUNNING, ELLIPTICAL, INDOOR_CYCLING, GENERIC
+
+    # Auto Walk vs Run Threshold (km/h)
+    # Workouts with avg speed <= threshold are tagged as Walking (Sport: WALKING, SubSport: GENERIC).
+    # Workouts with avg speed > threshold are tagged as Indoor Running (Sport: RUNNING, SubSport: INDOOR_RUNNING).
+    # Default is 6.0 km/h. Set to 0 to disable auto-threshold tagging.
+    walk_run_threshold_kmh: float = 6.0
 
     # Local sample / drop directory for offline / manual exports
     sample_dir: Path = Path("data/sample_activities")
@@ -109,6 +115,7 @@ class Config:
             device_software_version=float(os.getenv("DEVICE_SOFTWARE_VERSION", "18.16")),
             default_sport=os.getenv("DEFAULT_SPORT", "RUNNING").upper(),
             default_sub_sport=os.getenv("DEFAULT_SUB_SPORT", "TREADMILL").upper(),
+            walk_run_threshold_kmh=float(_clean_env("WALK_RUN_THRESHOLD_KMH", _clean_env("WALKING_SPEED_THRESHOLD_KMH", "6.0")) or 6.0),
             sample_dir=sample_dir,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

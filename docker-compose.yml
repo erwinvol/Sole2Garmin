@@ -11,7 +11,7 @@ services:
       # Sole / Dyaco Credentials (Option B: Direct SOLE+ Cloud API)
       - SOLE_EMAIL=your_sole_email@example.com
       - SOLE_PASSWORD=your_sole_password
-      - SOLE_BASE_URL=https://api.dyaco.com/v1
+      - SOLE_BASE_URL=https://sole-homeplus.dyacocloud.com
 
       # (Optional) Strava Credentials (if using Strava bridge instead)
       # - STRAVA_CLIENT_ID=your_strava_client_id

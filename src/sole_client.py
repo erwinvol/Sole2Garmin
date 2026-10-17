@@ -44,8 +44,14 @@ class SoleClient:
         token_dir: Optional[Path] = None,
         sample_dir: Optional[Path] = None,
     ):
-        self.email = (email or "").strip()
-        self.password = (password or "").strip()
+        def _clean_cred(s: Optional[str]) -> str:
+            v = (s or "").strip()
+            if len(v) >= 2 and ((v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'"))):
+                return v[1:-1].strip()
+            return v
+
+        self.email = _clean_cred(email)
+        self.password = _clean_cred(password)
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.token_dir = token_dir or Path("data/sole_tokens")
         self.sample_dir = sample_dir or Path("data/sample_activities")

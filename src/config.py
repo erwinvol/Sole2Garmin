@@ -78,19 +78,26 @@ class Config:
         sample_dir_env = os.getenv("SAMPLE_DIR")
         sample_dir = Path(sample_dir_env) if sample_dir_env else data_dir / "sample_activities"
 
+        def _clean_env(key: str, default: str = "") -> str:
+            raw = os.getenv(key, default)
+            v = (raw or "").strip()
+            if len(v) >= 2 and ((v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'"))):
+                return v[1:-1].strip()
+            return v
+
         return cls(
-            ingestion_provider=os.getenv("INGESTION_PROVIDER", "cloud").lower(),
-            strava_client_id=os.getenv("STRAVA_CLIENT_ID", ""),
-            strava_client_secret=os.getenv("STRAVA_CLIENT_SECRET", ""),
-            strava_refresh_token=os.getenv("STRAVA_REFRESH_TOKEN", ""),
+            ingestion_provider=_clean_env("INGESTION_PROVIDER", "cloud").lower(),
+            strava_client_id=_clean_env("STRAVA_CLIENT_ID", ""),
+            strava_client_secret=_clean_env("STRAVA_CLIENT_SECRET", ""),
+            strava_refresh_token=_clean_env("STRAVA_REFRESH_TOKEN", ""),
             strava_token_dir=strava_token_dir,
             strava_filter_sole_only=os.getenv("STRAVA_FILTER_SOLE_ONLY", "true").lower() in ("true", "1", "yes"),
-            sole_email=os.getenv("SOLE_EMAIL", ""),
-            sole_password=os.getenv("SOLE_PASSWORD", ""),
-            sole_base_url=os.getenv("SOLE_BASE_URL", "https://sole-homeplus.dyacocloud.com").rstrip("/"),
+            sole_email=_clean_env("SOLE_EMAIL", ""),
+            sole_password=_clean_env("SOLE_PASSWORD", ""),
+            sole_base_url=_clean_env("SOLE_BASE_URL", "https://sole-homeplus.dyacocloud.com").rstrip("/"),
             sole_token_dir=sole_token_dir,
-            garmin_username=os.getenv("GARMIN_USERNAME", ""),
-            garmin_password=os.getenv("GARMIN_PASSWORD", ""),
+            garmin_username=_clean_env("GARMIN_USERNAME", ""),
+            garmin_password=_clean_env("GARMIN_PASSWORD", ""),
             data_dir=data_dir,
             garmin_token_dir=garmin_token_dir,
             sync_interval_minutes=int(os.getenv("SYNC_INTERVAL_MINUTES", "60")),

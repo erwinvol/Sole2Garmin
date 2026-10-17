@@ -298,6 +298,7 @@ class SoleClient:
         payload = {"email": self.email, "brandCode": self.BRAND_CODE}
         try:
             resp = requests.post(global_url, json=payload, headers=headers, timeout=10)
+            logger.info("Dyaco GetLoginServerAddress [%s]: HTTP %s, Response: %s", global_url, resp.status_code, resp.text[:300])
             if resp.status_code == 200:
                 data = resp.json()
                 data_map = data.get("dataMap") or {}
@@ -311,7 +312,7 @@ class SoleClient:
                     logger.info("Resolved cluster server address from Dyaco global gateway: %s", server_addr)
                     return server_addr.rstrip("/")
         except Exception as exc:
-            logger.debug("GetLoginServerAddress query failed: %s", exc)
+            logger.warning("GetLoginServerAddress query failed: %s", exc)
         return None
 
     def ensure_authenticated(self) -> bool:

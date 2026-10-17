@@ -32,7 +32,7 @@ class Config:
     # Sole / Dyaco Credentials & API configuration (Option 2)
     sole_email: str = ""
     sole_password: str = ""
-    sole_base_url: str = "https://api.dyaco.com/v1"
+    sole_base_url: str = "https://sole-homeplus.dyacocloud.com"
     sole_token_dir: Path = Path("data/sole_tokens")
 
     # Garmin Credentials & Paths
@@ -87,7 +87,7 @@ class Config:
             strava_filter_sole_only=os.getenv("STRAVA_FILTER_SOLE_ONLY", "true").lower() in ("true", "1", "yes"),
             sole_email=os.getenv("SOLE_EMAIL", ""),
             sole_password=os.getenv("SOLE_PASSWORD", ""),
-            sole_base_url=os.getenv("SOLE_BASE_URL", "https://api.dyaco.com/v1").rstrip("/"),
+            sole_base_url=os.getenv("SOLE_BASE_URL", "https://sole-homeplus.dyacocloud.com").rstrip("/"),
             sole_token_dir=sole_token_dir,
             garmin_username=os.getenv("GARMIN_USERNAME", ""),
             garmin_password=os.getenv("GARMIN_PASSWORD", ""),

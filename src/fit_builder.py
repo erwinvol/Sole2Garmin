@@ -120,22 +120,21 @@ class FitBuilder:
             fit_sport = Sport.WALKING
             if sub_sport_str in ("INDOOR_WALKING", "INDOOR"):
                 fit_sub_sport = SubSport.INDOOR_WALKING
-                sport_name = "Indoor Walking"
-            else:
+            elif sub_sport_str == "GENERIC":
                 fit_sub_sport = SubSport.GENERIC
-                sport_name = "Walking"
+            else:
+                fit_sub_sport = SubSport.INDOOR_WALKING
+            sport_name = activity.get("name") or "Sole Treadmill Indoor Walking"
             act_type = ActivityType.WALKING
         else:  # RUNNING
             fit_sport = Sport.RUNNING
-            if sub_sport_str in ("INDOOR_RUNNING", "INDOOR"):
-                fit_sub_sport = SubSport.INDOOR_RUNNING
-                sport_name = "Indoor Running"
-            elif sub_sport_str == "TREADMILL":
+            if sub_sport_str == "TREADMILL":
                 fit_sub_sport = SubSport.TREADMILL
-                sport_name = "Treadmill"
+            elif sub_sport_str in ("INDOOR_RUNNING", "INDOOR"):
+                fit_sub_sport = SubSport.INDOOR_RUNNING
             else:
                 fit_sub_sport = SubSport.INDOOR_RUNNING
-                sport_name = "Indoor Running"
+            sport_name = activity.get("name") or "Sole Treadmill Indoor Run"
             act_type = ActivityType.RUNNING
 
         builder = FitFileBuilder(auto_define=True)
@@ -268,6 +267,8 @@ class FitBuilder:
         sess.total_ascent = total_ascent
         sess.sport = fit_sport
         sess.sub_sport = fit_sub_sport
+        sess.sport_profile_name = sport_name
+        sess.name = sport_name
         sess.num_laps = 1
         sess.first_lap_index = 0
         sess.trigger = SessionTrigger.ACTIVITY_END
@@ -281,6 +282,7 @@ class FitBuilder:
         act_msg.type = act_type
         act_msg.event = Event.ACTIVITY
         act_msg.event_type = EventType.STOP
+        act_msg.name = sport_name
         builder.add(act_msg)
 
         fit_file = builder.build()

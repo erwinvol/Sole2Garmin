@@ -150,7 +150,7 @@ class TestFitBuilder(unittest.TestCase):
     def test_build_fit_from_activity_walking(self):
         activity = {
             "id": "act_walk_01",
-            "name": "Sole Walking - Incline Walk",
+            "name": "Sole Treadmill Indoor Walking",
             "date": "2026-10-13T10:00:00Z",
             "sport": "WALKING",
             "sub_sport": "GENERIC",
@@ -177,7 +177,7 @@ class TestFitBuilder(unittest.TestCase):
                     found_sport = True
                     self.assertIn(msg.sport, (Sport.WALKING, Sport.WALKING.value))
                     self.assertIn(msg.sub_sport, (SubSport.GENERIC, SubSport.GENERIC.value))
-                    self.assertEqual(msg.sport_name, "Walking")
+                    self.assertEqual(msg.sport_name, "Sole Treadmill Indoor Walking")
                 elif isinstance(msg, SessionMessage):
                     found_session = True
                     self.assertIn(msg.sport, (Sport.WALKING, Sport.WALKING.value))
@@ -197,7 +197,7 @@ class TestFitBuilder(unittest.TestCase):
     def test_build_fit_from_activity_indoor_running(self):
         activity = {
             "id": "act_run_01",
-            "name": "Sole Indoor Running - Fast 5k",
+            "name": "Sole Treadmill Indoor Run",
             "date": "2026-10-13T10:00:00Z",
             "sport": "RUNNING",
             "sub_sport": "INDOOR_RUNNING",
@@ -224,7 +224,7 @@ class TestFitBuilder(unittest.TestCase):
                     found_sport = True
                     self.assertIn(msg.sport, (Sport.RUNNING, Sport.RUNNING.value))
                     self.assertIn(msg.sub_sport, (SubSport.INDOOR_RUNNING, SubSport.INDOOR_RUNNING.value))
-                    self.assertEqual(msg.sport_name, "Indoor Running")
+                    self.assertEqual(msg.sport_name, "Sole Treadmill Indoor Run")
                 elif isinstance(msg, SessionMessage):
                     found_session = True
                     self.assertIn(msg.sport, (Sport.RUNNING, Sport.RUNNING.value))

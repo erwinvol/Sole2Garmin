@@ -48,3 +48,4 @@ services:
       - LOG_LEVEL=INFO
     volumes:
       - ./data:/data
+      - ./src:/app/src:ro

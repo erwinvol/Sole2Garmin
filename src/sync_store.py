@@ -110,3 +110,12 @@ class SyncStore:
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM synced_activities")
             return cursor.fetchone()[0]
+
+    def clear_all(self) -> int:
+        """Clear all recorded activities from the database."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM synced_activities")
+            count = cursor.rowcount
+            conn.commit()
+        logger.info("Cleared %d activities from sync database.", count)
+        return count

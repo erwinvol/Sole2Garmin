@@ -62,6 +62,17 @@ class TestSyncStore(unittest.TestCase):
         recent = self.store.get_recent_synced(1)
         self.assertEqual(recent[0]["garmin_status"], "UPLOADED")
 
+    def test_clear_all(self):
+        self.store.record_activity("act_1", "Run 1", "2026-10-13", "RUNNING", "UPLOADED")
+        self.store.record_activity("act_2", "Run 2", "2026-10-13", "RUNNING", "UPLOADED")
+        self.assertEqual(self.store.count(), 2)
+
+        cleared = self.store.clear_all()
+        self.assertEqual(cleared, 2)
+        self.assertEqual(self.store.count(), 0)
+        self.assertFalse(self.store.is_synced("act_1"))
+
+
 
 if __name__ == "__main__":
     unittest.main()

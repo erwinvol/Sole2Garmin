@@ -85,6 +85,7 @@ def main() -> None:
     parser.add_argument("--sync-latest", action="store_true", help="Sync only the single most recent activity and exit.")
     parser.add_argument("--batch", type=int, default=None, metavar="N", help="Sync up to N recent activities and exit.")
     parser.add_argument("--status", action="store_true", help="Display local sync database history and exit.")
+    parser.add_argument("--re-sync", action="store_true", help="Clear sync database history and trigger a fresh sync run.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate sync without uploading to Garmin Connect or persisting.")
     parser.add_argument("--daemon", action="store_true", help="Force daemon polling mode (default when no one-off action is passed).")
 
@@ -105,6 +106,12 @@ def main() -> None:
     # Signal handlers
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+
+    if args.re_sync:
+        cleared = engine.store.clear_all()
+        logger.info("Cleared %d activities from sync database. Triggering fresh sync...", cleared)
+        engine.run_sync(limit=args.batch, dry_run=args.dry_run)
+        return
 
     if args.sync_latest:
         engine.run_sync(sync_latest=True, dry_run=args.dry_run)

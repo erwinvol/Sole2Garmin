@@ -10,6 +10,7 @@ from fit_tool.profile.messages.device_info_message import DeviceInfoMessage
 from fit_tool.profile.messages.event_message import EventMessage
 from fit_tool.profile.messages.file_id_message import FileIdMessage
 from fit_tool.profile.messages.lap_message import LapMessage
+from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
 from fit_tool.profile.profile_type import Manufacturer, Sport, SubSport
@@ -181,6 +182,12 @@ class TestFitBuilder(unittest.TestCase):
                     found_session = True
                     self.assertIn(msg.sport, (Sport.WALKING, Sport.WALKING.value))
                     self.assertIn(msg.sub_sport, (SubSport.GENERIC, SubSport.GENERIC.value))
+                    self.assertIsNone(msg.avg_heart_rate)
+                    self.assertIsNone(msg.max_heart_rate)
+                elif isinstance(msg, LapMessage):
+                    self.assertIsNone(msg.avg_heart_rate)
+                elif isinstance(msg, RecordMessage):
+                    self.assertIsNone(msg.heart_rate)
 
             self.assertTrue(found_sport)
             self.assertTrue(found_session)

@@ -89,11 +89,15 @@ class FitBuilder:
         avg_speed_mps = float(activity.get("avg_speed_mps") or (distance_m / duration_s))
         max_speed_mps = float(activity.get("max_speed_mps") or (avg_speed_mps * 1.15))
 
-        avg_hr = int(activity.get("avg_heart_rate") or 140)
-        max_hr = int(activity.get("max_heart_rate") or (avg_hr + 15))
+        raw_avg_hr = activity.get("avg_heart_rate")
+        avg_hr = int(raw_avg_hr) if raw_avg_hr and int(raw_avg_hr) > 0 else 0
+        raw_max_hr = activity.get("max_heart_rate")
+        max_hr = int(raw_max_hr) if raw_max_hr and int(raw_max_hr) > 0 else (avg_hr + 15 if avg_hr > 0 else 0)
 
-        avg_cadence = int(activity.get("avg_cadence") or 160)
-        max_cadence = int(activity.get("max_cadence") or (avg_cadence + 10))
+        raw_avg_cadence = activity.get("avg_cadence")
+        avg_cadence = int(raw_avg_cadence) if raw_avg_cadence and int(raw_avg_cadence) > 0 else 0
+        raw_max_cadence = activity.get("max_cadence")
+        max_cadence = int(raw_max_cadence) if raw_max_cadence and int(raw_max_cadence) > 0 else (avg_cadence + 10 if avg_cadence > 0 else 0)
 
         avg_incline = float(activity.get("avg_incline_pct") or 1.0)
         total_ascent = int(activity.get("total_ascent_meters") or (distance_m * (avg_incline / 100.0)))
@@ -175,15 +179,15 @@ class FitBuilder:
             for pt in data_points:
                 rec = RecordMessage()
                 rec.timestamp = parse_timestamp_ms(pt.get("timestamp", "")) or start_time_ms
-                if "distance" in pt:
+                if "distance" in pt and pt["distance"] is not None:
                     rec.distance = float(pt["distance"])
-                if "speed" in pt:
+                if "speed" in pt and pt["speed"] is not None:
                     rec.speed = float(pt["speed"])
-                if "heart_rate" in pt:
+                if "heart_rate" in pt and pt["heart_rate"] is not None and int(pt["heart_rate"]) > 0:
                     rec.heart_rate = int(pt["heart_rate"])
-                if "cadence" in pt:
+                if "cadence" in pt and pt["cadence"] is not None and int(pt["cadence"]) > 0:
                     rec.cadence = int(pt["cadence"])
-                if "altitude" in pt:
+                if "altitude" in pt and pt["altitude"] is not None:
                     rec.altitude = float(pt["altitude"])
                 builder.add(rec)
         else:
@@ -203,7 +207,6 @@ class FitBuilder:
                 rec.speed = round(avg_speed_mps, 2)
 
                 if avg_hr > 0:
-                    # Slight sinusoidal variation for realistic HR curve
                     hr_variation = int(3 * math.sin(i / 10.0))
                     rec.heart_rate = min(max_hr, max(avg_hr - 5, avg_hr + hr_variation))
 
@@ -233,10 +236,12 @@ class FitBuilder:
         lap.avg_speed = avg_speed_mps
         lap.max_speed = max_speed_mps
         lap.total_calories = calories
-        lap.avg_heart_rate = avg_hr
-        lap.max_heart_rate = max_hr
-        lap.avg_cadence = avg_cadence
-        lap.max_cadence = max_cadence
+        if avg_hr > 0:
+            lap.avg_heart_rate = avg_hr
+            lap.max_heart_rate = max_hr
+        if avg_cadence > 0:
+            lap.avg_cadence = avg_cadence
+            lap.max_cadence = max_cadence
         lap.total_ascent = total_ascent
         lap.sport = fit_sport
         lap.sub_sport = fit_sub_sport
@@ -254,10 +259,12 @@ class FitBuilder:
         sess.avg_speed = avg_speed_mps
         sess.max_speed = max_speed_mps
         sess.total_calories = calories
-        sess.avg_heart_rate = avg_hr
-        sess.max_heart_rate = max_hr
-        sess.avg_cadence = avg_cadence
-        sess.max_cadence = max_cadence
+        if avg_hr > 0:
+            sess.avg_heart_rate = avg_hr
+            sess.max_heart_rate = max_hr
+        if avg_cadence > 0:
+            sess.avg_cadence = avg_cadence
+            sess.max_cadence = max_cadence
         sess.total_ascent = total_ascent
         sess.sport = fit_sport
         sess.sub_sport = fit_sub_sport

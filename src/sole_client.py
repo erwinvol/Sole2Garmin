@@ -43,6 +43,7 @@ class SoleClient:
         base_url: str = DEFAULT_BASE_URL,
         token_dir: Optional[Path] = None,
         sample_dir: Optional[Path] = None,
+        walk_run_threshold_kmh: float = 6.0,
     ):
         def _clean_cred(s: Optional[str]) -> str:
             v = (s or "").strip()
@@ -55,6 +56,7 @@ class SoleClient:
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.token_dir = token_dir or Path("data/sole_tokens")
         self.sample_dir = sample_dir or Path("data/sample_activities")
+        self.walk_run_threshold_kmh = float(walk_run_threshold_kmh)
 
         self.session_id: Optional[str] = None
         self.login_token: Optional[str] = None
@@ -575,34 +577,6 @@ class SoleClient:
                 or datetime.now(timezone.utc).isoformat()
             )
 
-        # Equipment / Sport resolution from WorkoutViewVo
-        machine_cat = item.get("_machineCategoryType") or item.get("machineCategoryType")
-        machine_model = str(
-            item.get("machineModelName")
-            or item.get("machineName")
-            or item.get("modelNameFromMachine")
-            or item.get("machine_type")
-            or item.get("type")
-            or ""
-        ).lower()
-
-        # Dyaco machine category conventions: 1 = Treadmill, 2 = Bike, 3 = Elliptical, 4 = Rower
-        if machine_cat == 2 or "bike" in machine_model or "cycle" in machine_model:
-            sport = "CYCLING"
-            sub_sport = "INDOOR_CYCLING"
-            default_name = "Sole Indoor Cycling"
-        elif machine_cat == 3 or "elliptical" in machine_model:
-            sport = "FITNESS_EQUIPMENT"
-            sub_sport = "ELLIPTICAL"
-            default_name = "Sole Elliptical Session"
-        else:
-            sport = "RUNNING"
-            sub_sport = "TREADMILL"
-            default_name = "Sole Treadmill Run"
-
-        program_name = item.get("programName") or item.get("title") or item.get("name")
-        name = f"Sole Treadmill - {program_name}" if program_name and sport == "RUNNING" else (program_name or default_name)
-
         # Distance: convert to meters
         dist = float(item.get("totalDistance") or item.get("distance") or item.get("total_distance") or 0.0)
         dist_unit = str(item.get("distance_unit") or item.get("unit") or "").lower()
@@ -633,7 +607,7 @@ class SoleClient:
             or (dist_meters * (avg_incline / 100.0) if avg_incline > 0 else 0.0)
         )
 
-        # Speed (m/s)
+        # Speed (m/s and km/h)
         avg_speed = float(item.get("avgSpeed") or item.get("avg_speed") or 0.0)
         speed_unit = str(item.get("speed_unit") or "").lower()
         if speed_unit in ("mph", "mi/h"):
@@ -648,8 +622,51 @@ class SoleClient:
         else:
             avg_speed_mps = (dist_meters / duration) if duration > 0 else 0.0
 
+        avg_speed_kmh = avg_speed_mps * 3.6
         max_speed = float(item.get("maxSpeed") or item.get("max_speed") or 0.0)
         max_speed_mps = (max_speed / 3.6) if max_speed > 0 else (avg_speed_mps * 1.15)
+
+        # Equipment / Sport resolution from WorkoutViewVo
+        machine_cat = item.get("_machineCategoryType") or item.get("machineCategoryType")
+        machine_model = str(
+            item.get("machineModelName")
+            or item.get("machineName")
+            or item.get("modelNameFromMachine")
+            or item.get("machine_type")
+            or item.get("type")
+            or ""
+        ).lower()
+
+        # Dyaco machine category conventions: 1 = Treadmill, 2 = Bike, 3 = Elliptical, 4 = Rower
+        if machine_cat == 2 or "bike" in machine_model or "cycle" in machine_model:
+            sport = "CYCLING"
+            sub_sport = "INDOOR_CYCLING"
+            default_name = "Sole Indoor Cycling"
+        elif machine_cat == 3 or "elliptical" in machine_model:
+            sport = "FITNESS_EQUIPMENT"
+            sub_sport = "ELLIPTICAL"
+            default_name = "Sole Elliptical Session"
+        elif self.walk_run_threshold_kmh > 0 and avg_speed_kmh <= self.walk_run_threshold_kmh:
+            sport = "WALKING"
+            sub_sport = "GENERIC"
+            default_name = "Sole Walking"
+        else:
+            sport = "RUNNING"
+            sub_sport = "INDOOR_RUNNING"
+            default_name = "Sole Indoor Running"
+
+        program_name = item.get("programName") or item.get("title") or item.get("name")
+        if program_name:
+            if program_name.startswith("Sole "):
+                name = program_name
+            elif sport == "WALKING":
+                name = f"Sole Walking - {program_name}"
+            elif sport == "RUNNING":
+                name = f"Sole Indoor Running - {program_name}"
+            else:
+                name = f"{default_name} - {program_name}"
+        else:
+            name = default_name
 
         # Heart Rate
         avg_hr = int(item.get("avgHeartRate") or item.get("avg_hr") or item.get("avg_heart_rate") or item.get("heart_rate") or 0)

@@ -41,13 +41,58 @@ class TestSoleClient(unittest.TestCase):
         self.assertIsNotNone(norm)
         self.assertEqual(norm["id"], "workout_101")
         self.assertEqual(norm["sport"], "RUNNING")
-        self.assertEqual(norm["sub_sport"], "TREADMILL")
+        self.assertEqual(norm["sub_sport"], "INDOOR_RUNNING")
         self.assertAlmostEqual(norm["distance_meters"], 3.1 * 1609.344, places=1)
         self.assertEqual(norm["calories"], 320)
         self.assertAlmostEqual(norm["avg_speed_mps"], 6.2 * 0.44704, places=2)
         self.assertEqual(norm["avg_heart_rate"], 148)
         self.assertEqual(norm["avg_cadence"], 164)
         self.assertEqual(norm["avg_incline_pct"], 2.0)
+
+    def test_normalize_walking_activity_under_threshold(self):
+        """Test workouts with avg speed <= 6.0 km/h are tagged as Walking."""
+        client = SoleClient("test@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+        raw_walk = {
+            "id": "walk_201",
+            "programName": "Incline Walk",
+            "machineModelName": "Sole F80 Treadmill",
+            "distance": 3.0,  # 3 km
+            "duration": 2400,  # 40 min = 4.5 km/h
+            "avgSpeed": 4.5,
+            "speed_unit": "km/h",
+        }
+        norm = client._normalize_activity(raw_walk)
+        self.assertIsNotNone(norm)
+        self.assertEqual(norm["sport"], "WALKING")
+        self.assertEqual(norm["sub_sport"], "GENERIC")
+        self.assertEqual(norm["name"], "Sole Walking - Incline Walk")
+
+    def test_normalize_speed_boundary_and_custom_threshold(self):
+        """Test boundary at 6.0 km/h and custom threshold settings."""
+        client_default = SoleClient("test@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+
+        # Exactly 6.0 km/h -> WALKING
+        at_boundary = {"id": "w_6", "avgSpeed": 6.0, "duration": 1800, "distance": 3.0}
+        norm_6 = client_default._normalize_activity(at_boundary)
+        self.assertEqual(norm_6["sport"], "WALKING")
+        self.assertEqual(norm_6["sub_sport"], "GENERIC")
+
+        # 6.1 km/h -> INDOOR_RUNNING
+        over_boundary = {"id": "r_61", "avgSpeed": 6.1, "duration": 1800, "distance": 3.05}
+        norm_61 = client_default._normalize_activity(over_boundary)
+        self.assertEqual(norm_61["sport"], "RUNNING")
+        self.assertEqual(norm_61["sub_sport"], "INDOOR_RUNNING")
+
+        # Custom threshold: 4.5 km/h
+        client_custom = SoleClient(
+            "test@example.com", "pass",
+            token_dir=self.token_dir, sample_dir=self.sample_dir,
+            walk_run_threshold_kmh=4.5,
+        )
+        # 5.0 km/h is above 4.5 -> RUNNING
+        norm_custom = client_custom._normalize_activity({"id": "c_50", "avgSpeed": 5.0, "duration": 1800})
+        self.assertEqual(norm_custom["sport"], "RUNNING")
+        self.assertEqual(norm_custom["sub_sport"], "INDOOR_RUNNING")
 
     def test_normalize_workout_view_vo(self):
         """Test normalization of real Dyaco WorkoutViewVo contract with rawDataList."""
@@ -90,8 +135,8 @@ class TestSoleClient(unittest.TestCase):
         self.assertIsNotNone(norm)
         self.assertEqual(norm["id"], "dyaco-uuid-8888-9999")
         self.assertEqual(norm["sport"], "RUNNING")
-        self.assertEqual(norm["sub_sport"], "TREADMILL")
-        self.assertEqual(norm["name"], "Sole Treadmill - Fatburn")
+        self.assertEqual(norm["sub_sport"], "INDOOR_RUNNING")
+        self.assertEqual(norm["name"], "Sole Indoor Running - Fatburn")
         self.assertEqual(norm["duration_seconds"], 2400)
         self.assertEqual(norm["distance_meters"], 6200.0)
         self.assertEqual(norm["calories"], 480)

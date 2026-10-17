@@ -147,6 +147,12 @@ class SoleClient:
 
         logger.info("Authenticating with SOLE+ backend (%s) as %s...", self.base_url, self.email)
 
+        payload = {
+            "email": self.email,
+            "password": self.password,
+            "pushMessageToken": "",
+        }
+
         # Primary route reverse-engineered from DyacoApiService: POST api/LoginByEmail
         login_endpoints = [
             f"{self.base_url}/api/LoginByEmail",
@@ -154,36 +160,72 @@ class SoleClient:
             f"{self.base_url}/user/login",
         ]
 
-        payload = {
-            "email": self.email,
-            "password": self.password,
-            "pushMessageToken": "",
-        }
-
         last_error = None
         for endpoint in login_endpoints:
             try:
                 headers = self._get_headers()
                 response = requests.post(endpoint, json=payload, headers=headers, timeout=20)
                 if response.status_code in (200, 201):
+                    data = response.json()
+                    is_success = bool(data.get("success", False))
+
+                    if not is_success:
+                        err_code = data.get("errorCode")
+                        err_msg = data.get("errorMessage") or data.get("errorMsg") or "Login credentials rejected"
+                        logger.error(
+                            "SOLE+ authentication rejected by %s: %s (ErrorCode: %s, Full Response: %s)",
+                            endpoint,
+                            err_msg,
+                            err_code,
+                            data,
+                        )
+                        last_error = f"{err_msg} (ErrorCode: {err_code})"
+                        continue
+
                     # Extract sessionid from response headers (HeaderInterceptor convention)
                     resp_headers = {k.lower(): v for k, v in response.headers.items()}
-                    self.session_id = resp_headers.get("sessionid") or resp_headers.get("session_id") or self.session_id
+                    session_from_header = resp_headers.get("sessionid") or resp_headers.get("session_id")
 
-                    data = response.json()
-                    data_map = data.get("dataMap") or {}
-                    user_data = data_map.get("data") or {}
+                    session_from_cookie = None
+                    cookies = getattr(response, "cookies", None)
+                    if cookies is not None:
+                        try:
+                            if isinstance(cookies, dict):
+                                session_from_cookie = cookies.get("sessionid") or cookies.get("sessionId")
+                            elif hasattr(cookies, "get"):
+                                session_from_cookie = cookies.get("sessionid") or cookies.get("sessionId")
+                        except Exception:
+                            pass
 
-                    self.login_token = data_map.get("loginToken") or data.get("access_token") or data.get("token")
+                    self.session_id = None
+                    if isinstance(session_from_header, str):
+                        self.session_id = session_from_header
+                    elif isinstance(session_from_cookie, str):
+                        self.session_id = session_from_cookie
+
+                    data_map = data.get("dataMap") if isinstance(data.get("dataMap"), dict) else {}
+                    raw_user_data = data_map.get("data")
+                    user_data = raw_user_data if isinstance(raw_user_data, dict) else {}
+
+                    login_token = data_map.get("loginToken") or data.get("access_token") or data.get("token")
+                    self.login_token = str(login_token) if isinstance(login_token, str) else None
                     self.access_token = self.login_token
-                    self.refresh_token = data_map.get("serviceLoginToken") or data.get("refresh_token")
-                    self.user_id = str(user_data.get("userId") or data_map.get("userId") or data.get("user_id") or "default_user")
+                    refresh_token = data_map.get("serviceLoginToken") or data.get("refresh_token")
+                    self.refresh_token = str(refresh_token) if isinstance(refresh_token, str) else None
+
+                    uid = user_data.get("userId") or data_map.get("userId") or data.get("user_id")
+                    self.user_id = str(uid) if uid is not None else ""
 
                     if not self.session_id:
-                        self.session_id = data_map.get("sessionId") or data.get("sessionId")
+                        body_sess = data_map.get("sessionId") or data.get("sessionId")
+                        if isinstance(body_sess, str):
+                            self.session_id = body_sess
 
                     expires_in = data.get("expires_in", 86400 * 30)  # default 30 days session
-                    self.token_expiry = time.time() + int(expires_in)
+                    try:
+                        self.token_expiry = time.time() + int(expires_in)
+                    except (ValueError, TypeError):
+                        self.token_expiry = time.time() + 86400 * 30
 
                     self._save_cached_token()
                     logger.info("Successfully authenticated with SOLE+ (User ID: %s, Session ID: %s)", self.user_id, self.session_id)
@@ -202,8 +244,60 @@ class SoleClient:
                     break
                 last_error = err_msg
 
+        # If primary endpoints failed, attempt resolution via global gateway
+        resolved_server = self._resolve_login_server_address()
+        if resolved_server and resolved_server != self.base_url:
+            logger.info("Retrying login against resolved cluster: %s", resolved_server)
+            try:
+                resp = requests.post(
+                    f"{resolved_server}/api/LoginByEmail",
+                    json=payload,
+                    headers=self._get_headers(),
+                    timeout=20,
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    if data.get("success", False):
+                        self.base_url = resolved_server
+                        data_map = data.get("dataMap") or {}
+                        raw_u = data_map.get("data")
+                        u_data = raw_u if isinstance(raw_u, dict) else {}
+                        self.session_id = resp.headers.get("sessionid") or data_map.get("sessionId")
+                        self.login_token = data_map.get("loginToken")
+                        self.access_token = self.login_token
+                        self.user_id = str(u_data.get("userId") or "")
+                        self.token_expiry = time.time() + 86400 * 30
+                        self._save_cached_token()
+                        logger.info("Successfully authenticated via resolved cluster %s", resolved_server)
+                        return True
+            except Exception as exc:
+                logger.debug("Retry against resolved cluster failed: %s", exc)
+
         logger.warning("Could not authenticate against SOLE+ cloud (%s).", last_error)
         return False
+
+    def _resolve_login_server_address(self) -> Optional[str]:
+        """Query global gateway for user's assigned cluster server address."""
+        global_url = "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress"
+        headers = self._get_headers()
+        payload = {"email": self.email, "brandCode": self.BRAND_CODE}
+        try:
+            resp = requests.post(global_url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                data_map = data.get("dataMap") or {}
+                server_addr = (
+                    data_map.get("serverAddress")
+                    or data_map.get("serverUrl")
+                    or data_map.get("domain")
+                    or data.get("serverAddress")
+                )
+                if server_addr and isinstance(server_addr, str) and server_addr.startswith("http"):
+                    logger.info("Resolved cluster server address from Dyaco global gateway: %s", server_addr)
+                    return server_addr.rstrip("/")
+        except Exception as exc:
+            logger.debug("GetLoginServerAddress query failed: %s", exc)
+        return None
 
     def ensure_authenticated(self) -> bool:
         """Ensure an active session is present, logging in if needed."""

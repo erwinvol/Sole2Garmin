@@ -198,6 +198,26 @@ class TestSoleClient(unittest.TestCase):
         self.assertTrue(token_file.exists())
 
     @patch("requests.post")
+    def test_dyaco_cloud_login_rejected(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": False,
+            "errorCode": 112,
+            "errorMessage": "Account or password error",
+        }
+        mock_post.return_value = mock_response
+
+        client = SoleClient("wrong@example.com", "wrongpass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+        success = client.login()
+
+        self.assertFalse(success)
+        self.assertIsNone(client.session_id)
+        self.assertIsNone(client.access_token)
+        token_file = self.token_dir / "sole_token.json"
+        self.assertFalse(token_file.exists())
+
+    @patch("requests.post")
     def test_get_activities_monthly_statistics_workflow(self, mock_post):
         """Test primary workflow: GetUserMonthlyStatistics returning UserMonthlyStatisticsBeanData with workoutList."""
         # 1. Login response
@@ -205,10 +225,11 @@ class TestSoleClient(unittest.TestCase):
         login_resp.status_code = 200
         login_resp.headers = {"sessionid": "test_session"}
         login_resp.json.return_value = {
+            "success": True,
             "dataMap": {
                 "loginToken": "test_token",
                 "data": {"userId": "user_1"},
-            }
+            },
         }
 
         # 2. GetUserMonthlyStatistics response with UserMonthlyStatisticsBeanData
@@ -299,10 +320,11 @@ class TestSoleClient(unittest.TestCase):
         login_resp.status_code = 200
         login_resp.headers = {"sessionid": "test_session"}
         login_resp.json.return_value = {
+            "success": True,
             "dataMap": {
                 "loginToken": "test_token",
                 "data": {"userId": "user_1"},
-            }
+            },
         }
 
         # 2. GetUserMonthlyStatistics returns empty data

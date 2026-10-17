@@ -198,8 +198,8 @@ class TestSoleClient(unittest.TestCase):
         self.assertTrue(token_file.exists())
 
     @patch("requests.post")
-    def test_get_activities_cloud_workflow(self, mock_post):
-        """Test full workflow: GetMyWorkoutDateList -> GetUserWorkoutContent."""
+    def test_get_activities_monthly_statistics_workflow(self, mock_post):
+        """Test primary workflow: GetUserMonthlyStatistics returning UserMonthlyStatisticsBeanData with workoutList."""
         # 1. Login response
         login_resp = MagicMock()
         login_resp.status_code = 200
@@ -211,7 +211,106 @@ class TestSoleClient(unittest.TestCase):
             }
         }
 
-        # 2. GetMyWorkoutDateList response
+        # 2. GetUserMonthlyStatistics response with UserMonthlyStatisticsBeanData
+        monthly_resp = MagicMock()
+        monthly_resp.status_code = 200
+        monthly_resp.json.return_value = {
+            "success": True,
+            "dataMap": {
+                "totalCount": 2,
+                "totalPage": 1,
+                "data": [
+                    {
+                        "year": 2026,
+                        "month": 10,
+                        "totalCalories": 800,
+                        "activeHours": 1.2,
+                        "workoutList": [
+                            {
+                                "userWorkoutUuid": "uuid-monthly-1",
+                                "startTimeMillis": 1729080000000,
+                                "_machineCategoryType": 1,
+                                "totalTime": 1800,
+                                "totalDistance": 5000.0,
+                                "totalCalories": 350,
+                                "avgSpeed": 10.0,
+                                "avgIncline": 1.0,
+                                "rawDataList": [
+                                    {"second": 0, "speed": 10.0, "distance": 0.0, "heartRate": 130}
+                                ],
+                            },
+                            {
+                                "userWorkoutUuid": "uuid-monthly-2",
+                                "startTimeMillis": 1729166400000,
+                                "_machineCategoryType": 1,
+                                "totalTime": 1200,
+                                "totalDistance": 3000.0,
+                                "totalCalories": 220,
+                                "avgSpeed": 9.0,
+                                "avgIncline": 2.0,
+                                "rawDataList": [],
+                            },
+                        ],
+                    }
+                ],
+            },
+        }
+
+        # 3. For workout 2, rawDataList was empty so GetUserWorkoutContent is called
+        content_resp_2 = MagicMock()
+        content_resp_2.status_code = 200
+        content_resp_2.json.return_value = {
+            "success": True,
+            "dataMap": {
+                "data": {
+                    "userWorkoutUuid": "uuid-monthly-2",
+                    "startTimeMillis": 1729166400000,
+                    "_machineCategoryType": 1,
+                    "totalTime": 1200,
+                    "totalDistance": 3000.0,
+                    "totalCalories": 220,
+                    "avgSpeed": 9.0,
+                    "avgIncline": 2.0,
+                    "rawDataList": [
+                        {"second": 0, "speed": 9.0, "distance": 0.0, "heartRate": 125}
+                    ],
+                }
+            },
+        }
+
+        mock_post.side_effect = [login_resp, monthly_resp, content_resp_2]
+
+        client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+        activities = client.get_activities(limit=10)
+
+        self.assertEqual(len(activities), 2)
+        self.assertEqual(activities[0]["id"], "uuid-monthly-1")
+        self.assertEqual(activities[0]["distance_meters"], 5000.0)
+        self.assertEqual(len(activities[0]["data_points"]), 1)
+        self.assertEqual(activities[1]["id"], "uuid-monthly-2")
+        self.assertEqual(activities[1]["distance_meters"], 3000.0)
+        self.assertEqual(len(activities[1]["data_points"]), 1)
+
+    @patch("requests.post")
+    def test_get_activities_date_list_fallback(self, mock_post):
+        """Test fallback when GetUserMonthlyStatistics returns 0 items: falls back to GetMyWorkoutDateList."""
+        # 1. Login response
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.headers = {"sessionid": "test_session"}
+        login_resp.json.return_value = {
+            "dataMap": {
+                "loginToken": "test_token",
+                "data": {"userId": "user_1"},
+            }
+        }
+
+        # 2. GetUserMonthlyStatistics returns empty data
+        monthly_resp = MagicMock()
+        monthly_resp.status_code = 200
+        monthly_resp.json.return_value = {"success": True, "dataMap": {"data": []}}
+
+        # 3. GetMyWorkoutDateList response
         date_list_resp = MagicMock()
         date_list_resp.status_code = 200
         date_list_resp.json.return_value = {
@@ -222,17 +321,16 @@ class TestSoleClient(unittest.TestCase):
                         "year": "2026",
                         "monthData": [
                             {"userWorkoutUuid": "uuid-workout-1"},
-                            {"userWorkoutUuid": "uuid-workout-2"},
                         ],
                     }
                 ]
             },
         }
 
-        # 3. GetUserWorkoutContent response for workout 1
-        content_resp_1 = MagicMock()
-        content_resp_1.status_code = 200
-        content_resp_1.json.return_value = {
+        # 4. GetUserWorkoutContent response
+        content_resp = MagicMock()
+        content_resp.status_code = 200
+        content_resp.json.return_value = {
             "success": True,
             "dataMap": {
                 "data": {
@@ -249,36 +347,14 @@ class TestSoleClient(unittest.TestCase):
             },
         }
 
-        # 4. GetUserWorkoutContent response for workout 2
-        content_resp_2 = MagicMock()
-        content_resp_2.status_code = 200
-        content_resp_2.json.return_value = {
-            "success": True,
-            "dataMap": {
-                "data": {
-                    "userWorkoutUuid": "uuid-workout-2",
-                    "startTimeMillis": 1729166400000,
-                    "_machineCategoryType": 1,
-                    "totalTime": 1200,
-                    "totalDistance": 3000.0,
-                    "totalCalories": 220,
-                    "avgSpeed": 9.0,
-                    "avgIncline": 2.0,
-                    "rawDataList": [],
-                }
-            },
-        }
-
-        mock_post.side_effect = [login_resp, date_list_resp, content_resp_1, content_resp_2]
+        mock_post.side_effect = [login_resp, monthly_resp, date_list_resp, content_resp]
 
         client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
         activities = client.get_activities(limit=10)
 
-        self.assertEqual(len(activities), 2)
+        self.assertEqual(len(activities), 1)
         self.assertEqual(activities[0]["id"], "uuid-workout-1")
         self.assertEqual(activities[0]["distance_meters"], 5000.0)
-        self.assertEqual(activities[1]["id"], "uuid-workout-2")
-        self.assertEqual(activities[1]["distance_meters"], 3000.0)
 
 
 if __name__ == "__main__":

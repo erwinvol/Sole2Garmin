@@ -243,26 +243,64 @@ class SoleClient:
         return activities
 
     def _fetch_cloud_activities(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Fetch workout list and detailed telemetry from Dyaco cloud endpoints."""
+        """Fetch workout list and detailed telemetry from Dyaco cloud endpoints.
+
+        Endpoints:
+        1. Primary: POST api/GetUserMonthlyStatistics (returns UserMonthlyStatisticsBeanData with workoutList)
+        2. Fallback: POST api/GetMyWorkoutDateList and POST api/GetMyLatest3MonthWorkoutStatsByActivityType
+        3. Detailed Telemetry: POST api/GetUserWorkoutContent (with needRawData: true)
+        """
+        headers = self._get_headers()
+        raw_workouts: List[Dict[str, Any]] = []
         workout_uuids: List[str] = []
 
-        # Step 1: POST api/GetMyWorkoutDateList
-        date_list_url = f"{self.base_url}/api/GetMyWorkoutDateList"
-        headers = self._get_headers()
+        # Step 1: POST api/GetUserMonthlyStatistics
+        monthly_url = f"{self.base_url}/api/GetUserMonthlyStatistics"
+        current_year = datetime.now(timezone.utc).year
+        monthly_payload = {
+            "page": 1,
+            "pageSize": max(limit, 20),
+            "sortAsc": False,
+            "years": [current_year, current_year - 1],
+            "toFilter": False,
+        }
 
         try:
-            resp = requests.post(date_list_url, json={}, headers=headers, timeout=20)
+            resp = requests.post(monthly_url, json=monthly_payload, headers=headers, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
-                workout_uuids = self._extract_workout_uuids(data)
-                logger.debug("Discovered %d workout UUIDs from GetMyWorkoutDateList.", len(workout_uuids))
+                beans = data.get("dataMap", {}).get("data") or []
+                if isinstance(beans, list):
+                    for bean in beans:
+                        if isinstance(bean, dict):
+                            w_list = bean.get("workoutList") or []
+                            if isinstance(w_list, list):
+                                for w in w_list:
+                                    if isinstance(w, dict):
+                                        raw_workouts.append(w)
+                                        w_id = w.get("userWorkoutUuid") or w.get("workoutUuid")
+                                        if w_id and w_id not in workout_uuids:
+                                            workout_uuids.append(w_id)
+                logger.debug("Retrieved %d workouts from GetUserMonthlyStatistics.", len(raw_workouts))
             else:
-                logger.debug("GetMyWorkoutDateList returned HTTP %d: %s", resp.status_code, resp.text[:120])
+                logger.debug("GetUserMonthlyStatistics returned HTTP %d: %s", resp.status_code, resp.text[:120])
         except RequestException as exc:
-            logger.debug("GetMyWorkoutDateList request failed: %s", exc)
+            logger.debug("GetUserMonthlyStatistics request failed: %s", exc)
 
-        # Step 1b: Fallback to GetMyLatest3MonthWorkoutStatsByActivityType if no UUIDs found
-        if not workout_uuids:
+        # Step 1b: Fallback to GetMyWorkoutDateList if no workouts found
+        if not raw_workouts and not workout_uuids:
+            date_list_url = f"{self.base_url}/api/GetMyWorkoutDateList"
+            try:
+                resp = requests.post(date_list_url, json={}, headers=headers, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    workout_uuids = self._extract_workout_uuids(data)
+                    logger.debug("Discovered %d workout UUIDs from GetMyWorkoutDateList.", len(workout_uuids))
+            except RequestException as exc:
+                logger.debug("GetMyWorkoutDateList request failed: %s", exc)
+
+        # Step 1c: Fallback to GetMyLatest3MonthWorkoutStatsByActivityType
+        if not raw_workouts and not workout_uuids:
             stats_url = f"{self.base_url}/api/GetMyLatest3MonthWorkoutStatsByActivityType"
             try:
                 resp = requests.post(stats_url, json={}, headers=headers, timeout=20)
@@ -273,28 +311,50 @@ class SoleClient:
             except RequestException as exc:
                 logger.debug("Fallback stats request failed: %s", exc)
 
-        # Step 2: Fetch detailed WorkoutViewVo with telemetry for each workout UUID
+        # Step 2: Ensure detailed WorkoutViewVo with rawDataList telemetry
         activities: List[Dict[str, Any]] = []
         content_url = f"{self.base_url}/api/GetUserWorkoutContent"
 
-        for uuid in workout_uuids[:limit]:
-            try:
-                body = {
-                    "workoutUuid": uuid,
-                    "needRawData": True,
-                }
-                detail_resp = requests.post(content_url, json=body, headers=headers, timeout=25)
-                if detail_resp.status_code == 200:
-                    detail_data = detail_resp.json()
-                    data_map = detail_data.get("dataMap") or {}
-                    vo = data_map.get("data") or data_map
-                    norm = self._normalize_activity(vo)
-                    if norm:
-                        activities.append(norm)
-                else:
-                    logger.debug("GetUserWorkoutContent for %s returned HTTP %d", uuid, detail_resp.status_code)
-            except RequestException as exc:
-                logger.warning("Error fetching content for workout %s: %s", uuid, exc)
+        # If we have direct WorkoutViewVo objects from GetUserMonthlyStatistics
+        if raw_workouts:
+            for vo in raw_workouts[:limit]:
+                # If rawDataList is missing or empty, fetch full content
+                w_uuid = vo.get("userWorkoutUuid") or vo.get("workoutUuid")
+                if not vo.get("rawDataList") and w_uuid:
+                    try:
+                        detail_resp = requests.post(
+                            content_url,
+                            json={"workoutUuid": w_uuid, "needRawData": True},
+                            headers=headers,
+                            timeout=25,
+                        )
+                        if detail_resp.status_code == 200:
+                            d_map = detail_resp.json().get("dataMap") or {}
+                            vo = d_map.get("data") or vo
+                    except RequestException as exc:
+                        logger.debug("Could not fetch detailed rawDataList for %s: %s", w_uuid, exc)
+
+                norm = self._normalize_activity(vo)
+                if norm:
+                    activities.append(norm)
+        else:
+            # Query by UUID list
+            for uuid in workout_uuids[:limit]:
+                try:
+                    body = {
+                        "workoutUuid": uuid,
+                        "needRawData": True,
+                    }
+                    detail_resp = requests.post(content_url, json=body, headers=headers, timeout=25)
+                    if detail_resp.status_code == 200:
+                        detail_data = detail_resp.json()
+                        data_map = detail_data.get("dataMap") or {}
+                        vo = data_map.get("data") or data_map
+                        norm = self._normalize_activity(vo)
+                        if norm:
+                            activities.append(norm)
+                except RequestException as exc:
+                    logger.warning("Error fetching content for workout %s: %s", uuid, exc)
 
         return activities
 

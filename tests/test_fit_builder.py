@@ -5,8 +5,11 @@ import tempfile
 import unittest
 
 from fit_tool.fit_file import FitFile
+from fit_tool.profile.messages.activity_message import ActivityMessage
 from fit_tool.profile.messages.device_info_message import DeviceInfoMessage
+from fit_tool.profile.messages.event_message import EventMessage
 from fit_tool.profile.messages.file_id_message import FileIdMessage
+from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
 from fit_tool.profile.profile_type import Manufacturer, Sport, SubSport
@@ -65,6 +68,8 @@ class TestFitBuilder(unittest.TestCase):
             found_file_id = False
             found_sport = False
             found_session = False
+            found_lap = False
+            found_activity = False
 
             for r in fit_file.records:
                 msg = r.message
@@ -76,16 +81,30 @@ class TestFitBuilder(unittest.TestCase):
                     found_sport = True
                     self.assertIn(msg.sport, (Sport.RUNNING, Sport.RUNNING.value))
                     self.assertIn(msg.sub_sport, (SubSport.TREADMILL, SubSport.TREADMILL.value))
+                elif isinstance(msg, LapMessage):
+                    found_lap = True
+                    self.assertIsNotNone(msg.timestamp)
+                    self.assertIsNotNone(msg.start_time)
+                    self.assertGreater(msg.timestamp, msg.start_time)
                 elif isinstance(msg, SessionMessage):
                     found_session = True
                     self.assertIn(msg.sport, (Sport.RUNNING, Sport.RUNNING.value))
                     self.assertIn(msg.sub_sport, (SubSport.TREADMILL, SubSport.TREADMILL.value))
                     self.assertAlmostEqual(msg.total_distance, 1500.0, places=1)
                     self.assertEqual(msg.total_calories, 120)
+                    self.assertIsNotNone(msg.timestamp)
+                    self.assertIsNotNone(msg.start_time)
+                    self.assertGreater(msg.timestamp, msg.start_time)
+                elif isinstance(msg, ActivityMessage):
+                    found_activity = True
+                    self.assertIsNotNone(msg.timestamp)
+                    self.assertEqual(msg.num_sessions, 1)
 
             self.assertTrue(found_file_id)
             self.assertTrue(found_sport)
+            self.assertTrue(found_lap)
             self.assertTrue(found_session)
+            self.assertTrue(found_activity)
 
         finally:
             FitBuilder.cleanup_file(out_path)

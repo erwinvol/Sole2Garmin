@@ -188,6 +188,7 @@ class SyncEngine:
                     if self.garmin.check_duplicate(
                         activity_date_str=act_date,
                         activity_name=name,
+                        target_sport=sport,
                         threshold_hours=self.config.duplicate_threshold_hours,
                     ):
                         logger.warning("Activity %s already present on Garmin Connect. Marking skipped.", act_id)

@@ -38,6 +38,7 @@ class SyncEngine:
                     base_url=config.sole_base_url,
                     token_dir=config.sole_token_dir,
                     sample_dir=config.sample_dir,
+                    walk_run_threshold_kmh=config.walk_run_threshold_kmh,
                 )
             else:
                 active_source = StravaClient(
@@ -47,6 +48,7 @@ class SyncEngine:
                     token_dir=config.strava_token_dir,
                     filter_sole_only=config.strava_filter_sole_only,
                     sample_dir=config.sample_dir,
+                    walk_run_threshold_kmh=config.walk_run_threshold_kmh,
                 )
 
         self.source = active_source
@@ -125,18 +127,43 @@ class SyncEngine:
         activities_to_process = activities if sync_latest else list(reversed(activities))
 
         for activity in activities_to_process:
+            # Auto Walk vs Run threshold tagging
+            avg_mps = float(activity.get("avg_speed_mps") or 0.0)
+            if avg_mps <= 0 and activity.get("duration_seconds", 0) > 0:
+                avg_mps = float(activity.get("distance_meters", 0.0)) / float(activity["duration_seconds"])
+            avg_kmh = avg_mps * 3.6
+
+            current_sport = str(activity.get("sport", "RUNNING")).upper()
+            if self.config.walk_run_threshold_kmh > 0 and current_sport in ("RUNNING", "WALKING"):
+                if avg_kmh <= self.config.walk_run_threshold_kmh:
+                    activity["sport"] = "WALKING"
+                    activity["sub_sport"] = "GENERIC"
+                    if "Treadmill Run" in activity.get("name", ""):
+                        activity["name"] = activity["name"].replace("Treadmill Run", "Walking")
+                    elif "Indoor Running" in activity.get("name", ""):
+                        activity["name"] = activity["name"].replace("Indoor Running", "Walking")
+                else:
+                    activity["sport"] = "RUNNING"
+                    activity["sub_sport"] = "INDOOR_RUNNING"
+                    if "Sole Walking" in activity.get("name", ""):
+                        activity["name"] = activity["name"].replace("Sole Walking", "Sole Indoor Running")
+
             act_id = activity["id"]
             name = activity["name"]
             act_date = activity["date"]
             sport = activity.get("sport", "RUNNING")
+            sub_sport = activity.get("sub_sport", "INDOOR_RUNNING")
 
             logger.info("--------------------------------------------------")
             logger.info(
-                "Evaluating Sole activity: %s (ID: %s, Date: %s, Sport: %s)",
+                "Evaluating Sole activity: %s (ID: %s, Date: %s, Sport: %s/%s, Speed: %.1f km/h [Threshold: %.1f km/h])",
                 name,
                 act_id,
                 format_local_datetime(act_date),
                 sport,
+                sub_sport,
+                avg_kmh,
+                self.config.walk_run_threshold_kmh,
             )
 
             # Check 1: Already handled in local database

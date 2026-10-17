@@ -92,17 +92,37 @@ class FitBuilder:
         avg_incline = float(activity.get("avg_incline_pct") or 1.0)
         total_ascent = int(activity.get("total_ascent_meters") or (distance_m * (avg_incline / 100.0)))
 
-        # Resolve Sport
+        # Resolve Sport & SubSport
         sport_str = activity.get("sport", "RUNNING").upper()
+        sub_sport_str = activity.get("sub_sport", "").upper()
+
         if sport_str == "CYCLING":
             fit_sport = Sport.CYCLING
             fit_sub_sport = SubSport.INDOOR_CYCLING
+            sport_name = "Indoor Cycling"
         elif sport_str == "FITNESS_EQUIPMENT":
             fit_sport = Sport.FITNESS_EQUIPMENT
             fit_sub_sport = SubSport.ELLIPTICAL
-        else:
+            sport_name = "Elliptical"
+        elif sport_str == "WALKING":
+            fit_sport = Sport.WALKING
+            if sub_sport_str in ("INDOOR_WALKING", "INDOOR"):
+                fit_sub_sport = SubSport.INDOOR_WALKING
+                sport_name = "Indoor Walking"
+            else:
+                fit_sub_sport = SubSport.GENERIC
+                sport_name = "Walking"
+        else:  # RUNNING
             fit_sport = Sport.RUNNING
-            fit_sub_sport = SubSport.TREADMILL
+            if sub_sport_str in ("INDOOR_RUNNING", "INDOOR"):
+                fit_sub_sport = SubSport.INDOOR_RUNNING
+                sport_name = "Indoor Running"
+            elif sub_sport_str == "TREADMILL":
+                fit_sub_sport = SubSport.TREADMILL
+                sport_name = "Treadmill"
+            else:
+                fit_sub_sport = SubSport.INDOOR_RUNNING
+                sport_name = "Indoor Running"
 
         builder = FitFileBuilder(auto_define=True)
 
@@ -127,7 +147,7 @@ class FitBuilder:
         sport_msg = SportMessage()
         sport_msg.sport = fit_sport
         sport_msg.sub_sport = fit_sub_sport
-        sport_msg.name = "Treadmill" if fit_sub_sport == SubSport.TREADMILL else "Indoor"
+        sport_msg.sport_name = sport_name
         builder.add(sport_msg)
 
         # 4. Records (Time-series)
@@ -180,6 +200,8 @@ class FitBuilder:
 
         # 5. Lap
         lap = LapMessage()
+        lap.sport = fit_sport
+        lap.sub_sport = fit_sub_sport
         lap.start_time = start_time_ms
         lap.total_elapsed_time = duration_s
         lap.total_timer_time = duration_s

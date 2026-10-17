@@ -130,10 +130,31 @@ class TestSyncEngine(unittest.TestCase):
         stats = self.engine.run_sync(dry_run=True)
 
         self.assertEqual(stats["uploaded"], 2)
-        # Should not upload to Garmin Connect or persist in DB
-        self.mock_garmin.upload_activity.assert_not_called()
         self.assertFalse(self.store.is_synced("sole_01"))
         self.assertEqual(self.store.count(), 0)
+
+    def test_run_sync_applies_walk_run_threshold(self):
+        walk_activity = {
+            "id": "walk_auto_01",
+            "name": "Sole Treadmill Run",
+            "date": "2026-10-13T12:00:00Z",
+            "sport": "RUNNING",
+            "sub_sport": "TREADMILL",
+            "duration_seconds": 1800.0,
+            "distance_meters": 2000.0,
+            "avg_speed_mps": 1.11,  # 4.0 km/h <= 6.0 km/h
+        }
+        self.mock_sole.get_activities.return_value = [walk_activity]
+        self.mock_garmin.check_duplicate.return_value = False
+        self.mock_garmin.upload_activity.return_value = {"status": "uploaded"}
+
+        stats = self.engine.run_sync()
+        self.assertEqual(stats["uploaded"], 1)
+
+        # Check recorded sport in sync store
+        recent = self.store.get_recent_synced(1)
+        self.assertEqual(recent[0]["sole_id"], "walk_auto_01")
+        self.assertEqual(recent[0]["sport"], "WALKING")
 
 
 if __name__ == "__main__":

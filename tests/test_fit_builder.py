@@ -127,6 +127,88 @@ class TestFitBuilder(unittest.TestCase):
             FitBuilder.cleanup_file(initial_path)
             FitBuilder.cleanup_file(enhanced_path)
 
+    def test_build_fit_from_activity_walking(self):
+        activity = {
+            "id": "act_walk_01",
+            "name": "Sole Walking - Incline Walk",
+            "date": "2026-10-13T10:00:00Z",
+            "sport": "WALKING",
+            "sub_sport": "GENERIC",
+            "duration_seconds": 1800.0,
+            "distance_meters": 2200.0,
+            "calories": 180,
+            "avg_speed_mps": 1.22,
+        }
+        with tempfile.NamedTemporaryFile(suffix=".fit", delete=False) as tf:
+            out_path = tf.name
+
+        try:
+            res_path = self.builder.build_fit_from_activity(activity, output_path=out_path)
+            self.assertTrue(os.path.exists(res_path))
+
+            with open(res_path, "rb") as f:
+                fit_file = FitFile.from_bytes(f.read(), check_crc=True)
+
+            found_sport = False
+            found_session = False
+            for r in fit_file.records:
+                msg = r.message
+                if isinstance(msg, SportMessage):
+                    found_sport = True
+                    self.assertIn(msg.sport, (Sport.WALKING, Sport.WALKING.value))
+                    self.assertIn(msg.sub_sport, (SubSport.GENERIC, SubSport.GENERIC.value))
+                    self.assertEqual(msg.sport_name, "Walking")
+                elif isinstance(msg, SessionMessage):
+                    found_session = True
+                    self.assertIn(msg.sport, (Sport.WALKING, Sport.WALKING.value))
+                    self.assertIn(msg.sub_sport, (SubSport.GENERIC, SubSport.GENERIC.value))
+
+            self.assertTrue(found_sport)
+            self.assertTrue(found_session)
+        finally:
+            FitBuilder.cleanup_file(out_path)
+
+    def test_build_fit_from_activity_indoor_running(self):
+        activity = {
+            "id": "act_run_01",
+            "name": "Sole Indoor Running - Fast 5k",
+            "date": "2026-10-13T10:00:00Z",
+            "sport": "RUNNING",
+            "sub_sport": "INDOOR_RUNNING",
+            "duration_seconds": 1500.0,
+            "distance_meters": 5000.0,
+            "calories": 400,
+            "avg_speed_mps": 3.33,
+        }
+        with tempfile.NamedTemporaryFile(suffix=".fit", delete=False) as tf:
+            out_path = tf.name
+
+        try:
+            res_path = self.builder.build_fit_from_activity(activity, output_path=out_path)
+            self.assertTrue(os.path.exists(res_path))
+
+            with open(res_path, "rb") as f:
+                fit_file = FitFile.from_bytes(f.read(), check_crc=True)
+
+            found_sport = False
+            found_session = False
+            for r in fit_file.records:
+                msg = r.message
+                if isinstance(msg, SportMessage):
+                    found_sport = True
+                    self.assertIn(msg.sport, (Sport.RUNNING, Sport.RUNNING.value))
+                    self.assertIn(msg.sub_sport, (SubSport.INDOOR_RUNNING, SubSport.INDOOR_RUNNING.value))
+                    self.assertEqual(msg.sport_name, "Indoor Running")
+                elif isinstance(msg, SessionMessage):
+                    found_session = True
+                    self.assertIn(msg.sport, (Sport.RUNNING, Sport.RUNNING.value))
+                    self.assertIn(msg.sub_sport, (SubSport.INDOOR_RUNNING, SubSport.INDOOR_RUNNING.value))
+
+            self.assertTrue(found_sport)
+            self.assertTrue(found_session)
+        finally:
+            FitBuilder.cleanup_file(out_path)
+
 
 if __name__ == "__main__":
     unittest.main()

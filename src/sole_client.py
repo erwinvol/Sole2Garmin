@@ -144,9 +144,11 @@ class SoleClient:
             "brandCode": self.BRAND_CODE,
             "countryCode": self.COUNTRY_CODE,
             "sessionId": self.session_id or "",
+            "sessionid": self.session_id or "",
         }
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
+            headers["token"] = self.access_token
         return headers
 
     def login(self) -> bool:
@@ -424,14 +426,31 @@ class SoleClient:
             "page": 1,
             "pageSize": max(limit, 20),
             "sortAsc": False,
-            "years": [current_year, current_year - 1],
+            "years": [current_year, current_year - 1, current_year - 2],
             "toFilter": False,
         }
 
         try:
             resp = requests.post(monthly_url, json=monthly_payload, headers=headers, timeout=20)
+            logger.debug("GetUserMonthlyStatistics (HTTP %d, %d bytes): %s", resp.status_code, len(resp.text), resp.text)
             if resp.status_code == 200:
                 data = resp.json()
+                if not data.get("success", False):
+                    err_msg = data.get("errorMessage") or data.get("msg")
+                    err_code = data.get("errorCode")
+                    logger.warning(
+                        "Dyaco GetUserMonthlyStatistics returned success=false: %s (ErrorCode: %s, Response: %s)",
+                        err_msg,
+                        err_code,
+                        data,
+                    )
+                    # If session/token is invalid or expired, clear session and re-authenticate
+                    if err_code in (101, 103, 104, 114, 115) or "EXPIRED" in str(err_msg).upper() or "TOKEN" in str(err_msg).upper():
+                        logger.info("Dyaco session expired or invalid. Attempting re-login...")
+                        self.session_id = None
+                        self.access_token = None
+                        if self.login():
+                            return self._fetch_cloud_activities(limit=limit)
                 beans = data.get("dataMap", {}).get("data") or []
                 if isinstance(beans, list):
                     for bean in beans:
@@ -446,33 +465,53 @@ class SoleClient:
                                             workout_uuids.append(w_id)
                 logger.debug("Retrieved %d workouts from GetUserMonthlyStatistics.", len(raw_workouts))
             else:
-                logger.debug("GetUserMonthlyStatistics returned HTTP %d: %s", resp.status_code, resp.text[:120])
+                logger.warning("GetUserMonthlyStatistics returned HTTP %d: %s", resp.status_code, resp.text[:200])
         except RequestException as exc:
-            logger.debug("GetUserMonthlyStatistics request failed: %s", exc)
+            logger.warning("GetUserMonthlyStatistics request failed: %s", exc)
 
         # Step 1b: Fallback to GetMyWorkoutDateList if no workouts found
         if not raw_workouts and not workout_uuids:
             date_list_url = f"{self.base_url}/api/GetMyWorkoutDateList"
             try:
                 resp = requests.post(date_list_url, json={}, headers=headers, timeout=20)
+                logger.debug("GetMyWorkoutDateList (HTTP %d, %d bytes): %s", resp.status_code, len(resp.text), resp.text)
                 if resp.status_code == 200:
                     data = resp.json()
+                    if not data.get("success", False):
+                        logger.warning(
+                            "Dyaco GetMyWorkoutDateList returned success=false: %s (ErrorCode: %s, Response: %s)",
+                            data.get("errorMessage") or data.get("msg"),
+                            data.get("errorCode"),
+                            data,
+                        )
                     workout_uuids = self._extract_workout_uuids(data)
                     logger.debug("Discovered %d workout UUIDs from GetMyWorkoutDateList.", len(workout_uuids))
+                else:
+                    logger.warning("GetMyWorkoutDateList returned HTTP %d: %s", resp.status_code, resp.text[:200])
             except RequestException as exc:
-                logger.debug("GetMyWorkoutDateList request failed: %s", exc)
+                logger.warning("GetMyWorkoutDateList request failed: %s", exc)
 
         # Step 1c: Fallback to GetMyLatest3MonthWorkoutStatsByActivityType
         if not raw_workouts and not workout_uuids:
             stats_url = f"{self.base_url}/api/GetMyLatest3MonthWorkoutStatsByActivityType"
             try:
                 resp = requests.post(stats_url, json={}, headers=headers, timeout=20)
+                logger.debug("GetMyLatest3MonthWorkoutStatsByActivityType (HTTP %d, %d bytes): %s", resp.status_code, len(resp.text), resp.text)
                 if resp.status_code == 200:
                     data = resp.json()
+                    if not data.get("success", False):
+                        logger.warning(
+                            "Dyaco GetMyLatest3MonthWorkoutStatsByActivityType returned success=false: %s (ErrorCode: %s, Response: %s)",
+                            data.get("errorMessage") or data.get("msg"),
+                            data.get("errorCode"),
+                            data,
+                        )
                     workout_uuids = self._extract_workout_uuids(data)
                     logger.debug("Discovered %d workout UUIDs from 3-Month stats.", len(workout_uuids))
+                else:
+                    logger.warning("Fallback stats returned HTTP %d: %s", resp.status_code, resp.text[:200])
             except RequestException as exc:
-                logger.debug("Fallback stats request failed: %s", exc)
+                logger.warning("Fallback stats request failed: %s", exc)
 
         # Step 2: Ensure detailed WorkoutViewVo with rawDataList telemetry
         activities: List[Dict[str, Any]] = []

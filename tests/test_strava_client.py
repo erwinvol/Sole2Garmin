@@ -1,4 +1,4 @@
-"""Unit tests for Strava API client."""
+"""Unit tests for Strava client integration."""
 
 import json
 import tempfile
@@ -13,15 +13,16 @@ class TestStravaClient(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.token_dir = Path(self.temp_dir.name) / "tokens"
+        self.token_dir = Path(self.temp_dir.name) / "strava_tokens"
         self.sample_dir = Path(self.temp_dir.name) / "samples"
         self.sample_dir.mkdir(parents=True)
 
         self.client = StravaClient(
             client_id="12345",
             client_secret="secret_abc",
-            refresh_token="ref_token_xyz",
+            refresh_token="initial_refresh_token",
             token_dir=self.token_dir,
+            filter_sole_only=True,
             sample_dir=self.sample_dir,
         )
 
@@ -29,27 +30,36 @@ class TestStravaClient(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_is_sole_workout(self):
-        self.assertTrue(self.client._is_sole_workout({"name": "Sole F80 Treadmill Run"}))
-        self.assertTrue(self.client._is_sole_workout({"device_name": "Dyaco Sole TT8"}))
-        self.assertTrue(self.client._is_sole_workout({"external_id": "sole_activity_102"}))
-        self.assertFalse(self.client._is_sole_workout({"name": "Outdoor Park Run", "device_name": "Garmin Edge"}))
+        # 1. Matching by title
+        self.assertTrue(self.client._is_sole_workout({"name": "Sole F80 5K Run", "sport_type": "Run"}))
+        self.assertTrue(self.client._is_sole_workout({"name": "Morning Treadmill Sole", "sport_type": "VirtualRun"}))
+
+        # 2. Matching by equipment / device name
+        self.assertTrue(self.client._is_sole_workout({"name": "Morning Workout", "device_name": "Sole F85"}))
+
+        # 3. Outdoor regular run (should not match)
+        self.assertFalse(self.client._is_sole_workout({"name": "Outdoor Park 5K", "sport_type": "Run", "trainer": False}))
+
+        # 4. Relaxed filter: matches any indoor trainer run if filter_sole_only is False
+        relaxed_client = StravaClient("1", "2", "3", token_dir=self.token_dir, filter_sole_only=False)
+        self.assertTrue(relaxed_client._is_sole_workout({"name": "Treadmill Run", "trainer": True, "sport_type": "Run"}))
 
     def test_normalize_strava_activity_with_streams(self):
         raw_strava = {
             "id": 99887766,
-            "name": "Sole F80 Morning Run",
-            "type": "Run",
-            "start_date": "2026-10-13T08:00:00Z",
-            "elapsed_time": 1800,
+            "name": "Sole F80 Treadmill Run",
+            "start_date": "2026-10-13T14:00:00Z",
+            "sport_type": "Run",
             "moving_time": 1800,
+            "elapsed_time": 1800,
             "distance": 5000.0,
             "calories": 410,
             "average_speed": 2.77,
             "max_speed": 3.3,
             "average_heartrate": 150,
             "max_heartrate": 165,
-            "average_cadence": 162,
-            "total_elevation_gain": 45.0,
+            "average_cadence": 164,
+            "total_elevation_gain": 50.0,
         }
 
         mock_streams = {
@@ -73,9 +83,9 @@ class TestStravaClient(unittest.TestCase):
         self.assertEqual(len(norm["data_points"]), 4)
 
         first_pt = norm["data_points"][0]
-        self.assertEqual(first_pt["speed"], 2.77)
+        self.assertEqual(first_pt["distance"], 0.0)
         self.assertEqual(first_pt["heart_rate"], 140)
-        self.assertEqual(first_pt["cadence"], 160)
+        self.assertEqual(first_pt["incline"], 1.5)
 
     @patch("requests.post")
     def test_refresh_access_token(self, mock_post):
@@ -109,7 +119,7 @@ class TestStravaClient(unittest.TestCase):
         }
         norm = self.client._normalize_strava_activity(raw_walk)
         self.assertEqual(norm["sport"], "WALKING")
-        self.assertEqual(norm["sub_sport"], "GENERIC")
+        self.assertEqual(norm["sub_sport"], "INDOOR_WALKING")
 
 
 if __name__ == "__main__":

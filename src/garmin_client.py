@@ -234,7 +234,7 @@ class GarminClient:
                                     type_key,
                                     format_local_datetime(act_dt),
                                     norm_target,
-                                )
+                                    )
                                 continue
 
                         logger.warning(
@@ -258,11 +258,82 @@ class GarminClient:
                 logger.warning("Error querying Garmin Connect activities for duplicate check: %s. Continuing.", exc)
                 return False
 
-    def upload_activity(self, fit_file_path: str) -> Dict[str, Any]:
+    def set_activity_name(self, activity_id: str, title: str) -> bool:
+        """Update an activity title in Garmin Connect."""
+        self.ensure_authenticated()
+        try:
+            self._client.set_activity_name(str(activity_id), title)
+            logger.info("Successfully updated Garmin activity %s title to '%s'", activity_id, title)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to update Garmin activity %s title to '%s': %s", activity_id, title, exc)
+            return False
+
+    def _try_rename_uploaded_activity(
+        self,
+        activity_date_str: str,
+        desired_title: str,
+        target_sport: Optional[str] = None,
+        retries: int = 3,
+        delay_sec: int = 4,
+    ) -> bool:
+        """Find the uploaded activity on Garmin Connect matching activity_date_str and rename it."""
+        target_dt = parse_activity_datetime(activity_date_str)
+        if not target_dt:
+            return False
+
+        date_key = target_dt.strftime("%Y-%m-%d")
+
+        for attempt in range(1, retries + 1):
+            if delay_sec > 0:
+                time.sleep(delay_sec)
+            try:
+                activities = self._client.get_activities_by_date(date_key, date_key) or []
+                for act in activities:
+                    start_str = act.get("startTimeLocal") or act.get("startTimeGMT") or act.get("startTime")
+                    act_dt = parse_activity_datetime(start_str)
+                    if not act_dt:
+                        continue
+
+                    hours_diff = abs((act_dt - target_dt).total_seconds()) / 3600.0
+                    if hours_diff <= 0.5:
+                        type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
+                        if target_sport:
+                            norm_target = str(target_sport).upper()
+                            if norm_target in ("WALKING", "RUNNING") and ("cycl" in type_key or "ride" in type_key):
+                                continue
+
+                        act_id = act.get("activityId")
+                        current_title = act.get("activityName")
+                        if act_id and current_title != desired_title:
+                            logger.info(
+                                "Renaming Garmin activity %s to '%s' (current: '%s')...",
+                                act_id,
+                                desired_title,
+                                current_title,
+                            )
+                            return self.set_activity_name(str(act_id), desired_title)
+                        elif act_id:
+                            return True
+            except Exception as exc:
+                logger.debug("Rename attempt %d for %s failed: %s", attempt, date_key, exc)
+
+        return False
+
+    def upload_activity(
+        self,
+        fit_file_path: str,
+        activity_name: Optional[str] = None,
+        activity_date_str: Optional[str] = None,
+        target_sport: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Upload a FIT file to Garmin Connect.
 
         Args:
             fit_file_path: Absolute path to the .fit file.
+            activity_name: Optional desired activity name to set in Garmin Connect.
+            activity_date_str: Optional activity start date/time string.
+            target_sport: Optional sport (e.g. WALKING, RUNNING).
 
         Returns:
             Dictionary containing status ('uploaded', 'skipped_duplicate') and details.
@@ -279,6 +350,14 @@ class GarminClient:
             try:
                 response = self._client.upload_activity(fit_file_path)
                 logger.info("Upload to Garmin Connect successful! Response: %s", response)
+
+                if activity_name and activity_date_str:
+                    self._try_rename_uploaded_activity(
+                        activity_date_str=activity_date_str,
+                        desired_title=activity_name,
+                        target_sport=target_sport,
+                    )
+
                 return {"status": "uploaded", "response": response}
 
             except Exception as exc:
@@ -303,34 +382,25 @@ if __name__ == "__main__":
     import sys
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    parser = argparse.ArgumentParser(description="Authenticate with Garmin Connect and save tokens.")
-    parser.add_argument("--token-dir", default=os.getenv("GARMIN_TOKEN_DIR", "data/garmin_tokens"), help="Directory to save Garmin tokens")
+    parser = argparse.ArgumentParser(description="Authenticate and generate tokens for Garmin Connect.")
+    parser.add_argument("--token-dir", default=os.getenv("GARMIN_TOKEN_DIR", "data/garmin_tokens"), help="Token output directory")
     parser.add_argument("--username", default=os.getenv("GARMIN_USERNAME"), help="Garmin Connect email")
-    parser.add_argument("--password", default=os.getenv("GARMIN_PASSWORD"), help="Garmin Connect password")
     args = parser.parse_args()
 
+    token_dir = Path(args.token_dir)
     email = args.username or input("Garmin Connect Email: ").strip()
-    password = args.password or getpass.getpass("Garmin Connect Password: ").strip()
+    password = os.getenv("GARMIN_PASSWORD") or getpass.getpass("Garmin Connect Password: ")
 
-    from garminconnect import Garmin
-
-    def mfa_prompt():
-        return input("Garmin MFA/2FA Verification Code: ").strip()
-
+    client = GarminClient(username=email, password=password, token_dir=token_dir)
     print(f"Authenticating with Garmin Connect as {email}...")
-    token_path = Path(args.token_dir)
-    token_path.mkdir(parents=True, exist_ok=True)
-
     try:
-        client = Garmin(email, password, prompt_mfa=mfa_prompt)
-        client.login()
-        try:
-            client.client.dump(str(token_path))
-        except AttributeError:
-            if hasattr(client, "garth"):
-                client.garth.dump(str(token_path))
-        print(f"Success! Garmin tokens saved to {token_path}")
+        from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
+
+        client.authenticate()
+        print(f"SUCCESS: Tokens successfully saved to {token_dir.absolute()}")
+    except GarminConnectAuthenticationError as exc:
+        print(f"Authentication failed: {exc}")
+        sys.exit(1)
     except Exception as exc:
-        print(f"Authentication failed: {exc}", file=sys.stderr)
+        print(f"Error during authentication: {exc}")
         sys.exit(1)

@@ -1,4 +1,4 @@
-"""Strava API client for fetching workouts recorded via Sole+ app sync."""
+"""Strava API client for discovering and streaming Sole activities."""
 
 import json
 import logging
@@ -21,10 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class StravaClient:
-    """Client for pulling activities and streams from Strava API."""
+    """Client for authenticating with Strava and retrieving Sole activities and telemetry streams."""
 
-    AUTH_URL = "https://www.strava.com/oauth/token"
-    API_BASE_URL = "https://www.strava.com/api/v3"
+    TOKEN_URL = "https://www.strava.com/oauth/token"
+    ACTIVITIES_URL = "https://www.strava.com/api/v3/athlete/activities"
+    STREAM_URL_TEMPLATE = "https://www.strava.com/api/v3/activities/{activity_id}/streams"
 
     def __init__(
         self,
@@ -78,114 +79,115 @@ class StravaClient:
         return False
 
     def _save_cached_token(self) -> None:
-        """Save access and refresh tokens to disk."""
+        """Save active Strava tokens to disk."""
         try:
             self.token_dir.mkdir(parents=True, exist_ok=True)
             token_file = self._token_file_path()
+            payload = {
+                "access_token": self.access_token,
+                "refresh_token": self.refresh_token,
+                "expires_at": self.token_expires_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
             with open(token_file, "w", encoding="utf-8") as f:
-                json.dump({
-                    "access_token": self.access_token,
-                    "refresh_token": self.refresh_token,
-                    "expires_at": self.token_expires_at,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }, f, indent=2)
-            logger.debug("Persisted Strava token to %s", token_file)
+                json.dump(payload, f, indent=2)
+            logger.debug("Saved Strava session token to %s", token_file)
         except Exception as exc:
-            logger.warning("Could not persist Strava token: %s", exc)
+            logger.warning("Failed to save Strava token: %s", exc)
 
     def refresh_access_token(self) -> bool:
-        """Exchange refresh token for an active bearer access token."""
+        """Obtain a new access token using the refresh token."""
         if not self.client_id or not self.client_secret or not self.refresh_token:
-            logger.warning("Strava credentials not fully configured (client_id, secret, or refresh_token missing).")
+            logger.warning("Strava credentials (CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN) not configured.")
             return False
 
+        logger.info("Refreshing Strava OAuth access token...")
         payload = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-            "refresh_token": self.refresh_token,
             "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
         }
 
         try:
-            resp = requests.post(self.AUTH_URL, data=payload, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                self.access_token = data.get("access_token")
-                self.refresh_token = data.get("refresh_token") or self.refresh_token
-                self.token_expires_at = data.get("expires_at", time.time() + 21600)
+            response = requests.post(self.TOKEN_URL, data=payload, timeout=20)
+            if response.status_code == 200:
+                data = response.json()
+                self.access_token = data["access_token"]
+                self.refresh_token = data.get("refresh_token", self.refresh_token)
+                self.token_expires_at = float(data.get("expires_at", time.time() + 21600))
                 self._save_cached_token()
-                logger.info("Strava access token refreshed successfully.")
+                logger.info("Successfully refreshed Strava OAuth token.")
                 return True
             else:
-                logger.error("Failed to refresh Strava token (HTTP %d): %s", resp.status_code, resp.text)
+                logger.error("Strava token refresh failed: HTTP %d: %s", response.status_code, response.text[:120])
+                return False
         except RequestException as exc:
-            logger.error("Network error refreshing Strava token: %s", exc)
-
-        return False
+            logger.error("Network error during Strava token refresh: %s", exc)
+            return False
 
     def ensure_authenticated(self) -> bool:
-        """Verify token is active; refresh if expired."""
+        """Ensure an active, non-expired access token is available."""
         if self.access_token and self.token_expires_at > time.time() + 60:
             return True
         return self.refresh_access_token()
 
     def get_activities(self, limit: int = 10, page: int = 1) -> List[Dict[str, Any]]:
-        """Fetch activities from Strava or fallback sample directory."""
-        activities: List[Dict[str, Any]] = []
+        """Fetch activities from Strava filtered for Sole workouts and local sample activities."""
+        results: List[Dict[str, Any]] = []
 
-        if self.ensure_authenticated():
+        if self.ensure_authenticated() and self.access_token:
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+            params = {"per_page": max(limit * 2, 20), "page": page}
+
             try:
-                headers = {"Authorization": f"Bearer {self.access_token}"}
-                params = {"per_page": max(limit, 10), "page": page}
-                resp = requests.get(f"{self.API_BASE_URL}/athlete/activities", headers=headers, params=params, timeout=20)
-                if resp.status_code == 200:
-                    raw_list = resp.json()
-                    logger.info("Retrieved %d raw activities from Strava API.", len(raw_list))
-                    for item in raw_list:
-                        if self.filter_sole_only and not self._is_sole_workout(item):
-                            logger.debug("Skipping non-Sole activity: %s (type: %s)", item.get("name"), item.get("type"))
-                            continue
+                logger.info("Fetching recent activities from Strava (Page %d)...", page)
+                response = requests.get(self.ACTIVITIES_URL, headers=headers, params=params, timeout=25)
+                if response.status_code == 200:
+                    raw_activities = response.json()
+                    logger.info("Retrieved %d total activities from Strava. Filtering for Sole workouts...", len(raw_activities))
 
-                        # Fetch stream telemetry if available
-                        act_id = item.get("id")
-                        streams = self._fetch_activity_streams(act_id)
-                        norm = self._normalize_strava_activity(item, streams)
-                        if norm:
-                            activities.append(norm)
+                    for raw_act in raw_activities:
+                        if self._is_sole_workout(raw_act):
+                            act_id = str(raw_act["id"])
+                            # Fetch high-resolution time-series streams
+                            streams = self.get_activity_streams(act_id)
+                            norm = self._normalize_strava_activity(raw_act, streams)
+                            if norm:
+                                results.append(norm)
+
+                            if len(results) >= limit:
+                                break
                 else:
-                    logger.warning("Strava get activities returned HTTP %d: %s", resp.status_code, resp.text)
+                    logger.warning("Strava get_activities returned HTTP %d: %s", response.status_code, response.text[:100])
             except RequestException as exc:
-                logger.warning("Failed fetching Strava activities: %s", exc)
+                logger.warning("Error fetching Strava activities: %s", exc)
 
-        # Fallback to sample directory if present
-        if self.sample_dir and self.sample_dir.exists():
-            local_files = sorted(self.sample_dir.glob("*.json"), key=os.path.getmtime, reverse=True)
-            for jf in local_files[:limit]:
-                try:
-                    with open(jf, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    items = data if isinstance(data, list) else [data]
-                    for item in items:
-                        norm = self._normalize_strava_activity(item)
-                        if norm and norm["id"] not in {a["id"] for a in activities}:
-                            activities.append(norm)
-                except Exception as exc:
-                    logger.debug("Could not read local activity JSON %s: %s", jf, exc)
+        # Merge local drop folder / sample activities
+        local_items = self._load_local_activities(limit=limit)
+        existing_ids = {a["id"] for a in results}
+        for item in local_items:
+            if item["id"] not in existing_ids:
+                results.append(item)
 
-        return activities[:limit]
+        logger.info("Found %d eligible Sole activities to process.", len(results))
+        return results[:limit]
 
-    def _fetch_activity_streams(self, activity_id: int) -> Dict[str, Any]:
-        """Fetch detailed second-by-second telemetry streams for a Strava activity."""
-        if not activity_id:
+    def get_activity_streams(self, activity_id: str) -> Dict[str, Any]:
+        """Fetch second-by-second telemetry streams for an activity from Strava."""
+        if not self.ensure_authenticated() or not self.access_token:
             return {}
 
+        url = self.STREAM_URL_TEMPLATE.format(activity_id=activity_id)
         headers = {"Authorization": f"Bearer {self.access_token}"}
-        keys = "time,distance,velocity_smooth,heartrate,cadence,altitude,grade_smooth"
-        url = f"{self.API_BASE_URL}/activities/{activity_id}/streams"
-        params = {"keys": keys, "key_by_type": "true"}
+        params = {
+            "keys": "time,distance,velocity_smooth,grade_smooth,altitude,heartrate,cadence,watts",
+            "key_by_type": "true",
+        }
 
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            logger.debug("Fetching telemetry streams for Strava activity %s...", activity_id)
+            resp = requests.get(url, headers=headers, params=params, timeout=25)
             if resp.status_code == 200:
                 return resp.json()
             else:
@@ -245,14 +247,14 @@ class StravaClient:
             sub_sport = "ELLIPTICAL"
         elif "WALK" in sport_type or (self.walk_run_threshold_kmh > 0 and avg_speed_kmh <= self.walk_run_threshold_kmh):
             sport = "WALKING"
-            sub_sport = "GENERIC"
-            if name == "Sole Activity":
-                name = "Sole Walking"
+            sub_sport = "INDOOR_WALKING"
+            if name in ("Sole Activity", "Sole Walking"):
+                name = "Sole Treadmill Indoor Walking"
         else:
             sport = "RUNNING"
             sub_sport = "INDOOR_RUNNING"
-            if name == "Sole Activity":
-                name = "Sole Indoor Running"
+            if name in ("Sole Activity", "Sole Indoor Running"):
+                name = "Sole Treadmill Indoor Run"
 
         avg_hr = int(raw.get("average_heartrate") or 0)
         max_hr = int(raw.get("max_heartrate") or (avg_hr + 15 if avg_hr > 0 else 0))
@@ -261,31 +263,30 @@ class StravaClient:
         total_ascent = float(raw.get("total_elevation_gain") or 0.0)
 
         # Parse streams into data_points if present
-        data_points: List[Dict[str, Any]] = []
+        data_points = []
         if streams:
             times = streams.get("time", {}).get("data", [])
             distances = streams.get("distance", {}).get("data", [])
-            speeds = streams.get("velocity_smooth", {}).get("data", [])
+            velocities = streams.get("velocity_smooth", {}).get("data", [])
+            grades = streams.get("grade_smooth", {}).get("data", [])
+            altitudes = streams.get("altitude", {}).get("data", [])
             hrs = streams.get("heartrate", {}).get("data", [])
             cadences = streams.get("cadence", {}).get("data", [])
-            altitudes = streams.get("altitude", {}).get("data", [])
-            grades = streams.get("grade_smooth", {}).get("data", [])
 
-            base_ms = int(datetime.fromisoformat(date_str.replace("Z", "+00:00")).timestamp() * 1000)
             for i in range(len(times)):
-                pt: Dict[str, Any] = {"timestamp": base_ms + int(times[i] * 1000)}
+                pt = {"timestamp": times[i]}
                 if i < len(distances):
-                    pt["distance"] = float(distances[i])
-                if i < len(speeds):
-                    pt["speed"] = float(speeds[i])
-                if i < len(hrs):
-                    pt["heart_rate"] = int(hrs[i])
-                if i < len(cadences):
-                    pt["cadence"] = int(cadences[i])
-                if i < len(altitudes):
-                    pt["altitude"] = float(altitudes[i])
+                    pt["distance"] = distances[i]
+                if i < len(velocities):
+                    pt["speed"] = velocities[i]
                 if i < len(grades):
-                    pt["incline"] = float(grades[i])
+                    pt["incline"] = grades[i]
+                if i < len(altitudes):
+                    pt["altitude"] = altitudes[i]
+                if i < len(hrs):
+                    pt["heart_rate"] = hrs[i]
+                if i < len(cadences):
+                    pt["cadence"] = cadences[i]
                 data_points.append(pt)
 
         return {
@@ -302,10 +303,43 @@ class StravaClient:
             "avg_heart_rate": avg_hr,
             "max_heart_rate": max_hr,
             "avg_cadence": avg_cadence,
-            "max_cadence": avg_cadence + 10 if avg_cadence > 0 else 0,
-            "avg_incline_pct": 1.0,
-            "max_incline_pct": 2.0,
             "total_ascent_meters": total_ascent,
             "data_points": data_points,
-            "raw_fit_path": None,
         }
+
+    def _load_local_activities(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Load sample workouts from sample_dir."""
+        results = []
+        if not self.sample_dir.exists():
+            return results
+
+        json_files = sorted(self.sample_dir.glob("*.json"), key=os.path.getmtime, reverse=True)
+        for jf in json_files[:limit]:
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    content = json.load(f)
+                if isinstance(content, dict):
+                    items = content.get("dataMap", {}).get("data") or content.get("data") or [content]
+                    for item in items:
+                        if isinstance(item, dict):
+                            results.append({
+                                "id": f"local_{jf.stem}",
+                                "name": item.get("name", f"Sole Activity ({jf.stem})"),
+                                "date": item.get("date") or datetime.now(timezone.utc).isoformat(),
+                                "sport": "RUNNING",
+                                "sub_sport": "INDOOR_RUNNING",
+                                "duration_seconds": float(item.get("duration", 1800.0)),
+                                "distance_meters": float(item.get("distance", 5000.0)),
+                                "calories": int(item.get("calories", 350)),
+                                "avg_speed_mps": float(item.get("avg_speed", 2.77)),
+                                "max_speed_mps": float(item.get("max_speed", 3.2)),
+                                "avg_heart_rate": int(item.get("avg_hr", 145)),
+                                "max_heart_rate": int(item.get("max_hr", 160)),
+                                "avg_cadence": int(item.get("cadence", 160)),
+                                "total_ascent_meters": float(item.get("elevation", 0.0)),
+                                "data_points": [],
+                            })
+            except Exception as exc:
+                logger.warning("Could not read local JSON file %s: %s", jf, exc)
+
+        return results[:limit]

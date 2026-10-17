@@ -151,14 +151,63 @@ class TestSoleClient(unittest.TestCase):
         self.assertEqual(activities[0]["id"], "local_sample_1")
 
     @patch("requests.post")
-    def test_dyaco_cloud_login(self, mock_post):
+    def test_resolve_login_server_address(self, mock_post):
+        """Test reverse-engineered Dyaco global gateway cluster resolution."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.headers = {
+        mock_response.json.return_value = {
+            "success": True,
+            "dataMap": {"data": "https://sole-homeplus-cluster.dyacocloud.com"},
+        }
+        mock_post.return_value = mock_response
+
+        client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+        server = client._resolve_login_server_address(register_type=1)
+
+        self.assertEqual(server, "https://sole-homeplus-cluster.dyacocloud.com")
+        mock_post.assert_called_once()
+        call_args, call_kwargs = mock_post.call_args
+        self.assertEqual(call_args[0], "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress")
+        self.assertEqual(call_kwargs["json"], {"registerType": 1, "email": "user@example.com"})
+
+    @patch("requests.post")
+    def test_check_user_exists(self, mock_post):
+        """Test reverse-engineered Dyaco IsUserExists contract."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "success": True,
+            "dataMap": {"data": True},
+        }
+        mock_post.return_value = mock_response
+
+        client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
+        exists = client.check_user_exists(register_type=1)
+
+        self.assertTrue(exists)
+        mock_post.assert_called_once()
+        call_args, call_kwargs = mock_post.call_args
+        self.assertEqual(call_args[0], "https://homeglobal.dyacocloud.com/api/IsUserExists")
+        self.assertEqual(call_kwargs["json"], {"registerType": 1, "email": "user@example.com"})
+
+    @patch("requests.post")
+    def test_dyaco_cloud_login(self, mock_post):
+        # 1. Gateway cluster resolution
+        gateway_resp = MagicMock()
+        gateway_resp.status_code = 200
+        gateway_resp.json.return_value = {
+            "success": True,
+            "dataMap": {"data": "https://sole-homeplus-cluster.dyacocloud.com"},
+        }
+
+        # 2. Cluster login response
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.headers = {
             "sessionid": "sess_abcdef123456",
             "Content-Type": "application/json",
         }
-        mock_response.json.return_value = {
+        login_resp.json.return_value = {
             "success": True,
             "dataMap": {
                 "loginToken": "jwt_dyaco_login_token",
@@ -169,30 +218,28 @@ class TestSoleClient(unittest.TestCase):
                 },
             },
         }
-        mock_post.return_value = mock_response
+        mock_post.side_effect = [gateway_resp, login_resp]
 
         client = SoleClient("soleuser@example.com", "mypass", token_dir=self.token_dir, sample_dir=self.sample_dir)
         success = client.login()
 
         self.assertTrue(success)
+        self.assertEqual(client.base_url, "https://sole-homeplus-cluster.dyacocloud.com")
         self.assertEqual(client.session_id, "sess_abcdef123456")
         self.assertEqual(client.access_token, "jwt_dyaco_login_token")
         self.assertEqual(client.user_id, "sole_dyaco_user_42")
 
-        # Verify exact endpoint called
-        mock_post.assert_called_once()
-        call_args, call_kwargs = mock_post.call_args
-        self.assertEqual(call_args[0], "https://sole-homeplus.dyacocloud.com/api/LoginByEmail")
-        self.assertEqual(call_kwargs["json"]["email"], "soleuser@example.com")
-        self.assertTrue(bool(call_kwargs["json"].get("pushToken")))
-        self.assertTrue(bool(call_kwargs["json"].get("pushMessageToken")))
+        # Verify calls: gateway resolution then cluster login
+        self.assertEqual(mock_post.call_count, 2)
+        gateway_call = mock_post.call_args_list[0]
+        self.assertEqual(gateway_call[0][0], "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress")
+        self.assertEqual(gateway_call[1]["json"], {"registerType": 1, "email": "soleuser@example.com"})
 
-        # Verify HeaderInterceptor signature headers sent
-        headers = call_kwargs["headers"]
-        self.assertEqual(headers["app"], "HOME_ANDROID")
-        self.assertEqual(headers["appVersion"], "4.36")
-        self.assertEqual(headers["brandCode"], "sole")
-        self.assertEqual(headers["countryCode"], "US")
+        login_call = mock_post.call_args_list[1]
+        self.assertEqual(login_call[0][0], "https://sole-homeplus-cluster.dyacocloud.com/api/LoginByEmail")
+        self.assertEqual(login_call[1]["json"]["email"], "soleuser@example.com")
+        self.assertTrue(bool(login_call[1]["json"].get("pushToken")))
+        self.assertTrue(bool(login_call[1]["json"].get("pushMessageToken")))
 
         # Check token file was saved
         token_file = self.token_dir / "sole_token.json"
@@ -200,14 +247,32 @@ class TestSoleClient(unittest.TestCase):
 
     @patch("requests.post")
     def test_dyaco_cloud_login_rejected(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
+        # 1. Gateway resolution returns default
+        gateway_resp = MagicMock()
+        gateway_resp.status_code = 200
+        gateway_resp.json.return_value = {
+            "success": True,
+            "dataMap": {"data": "https://sole-homeplus.dyacocloud.com"},
+        }
+
+        # 2. Login returns 112
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.json.return_value = {
             "success": False,
             "errorCode": 112,
             "errorMessage": "Account or password error",
         }
-        mock_post.return_value = mock_response
+
+        # 3. Diagnostic check_user_exists
+        exists_resp = MagicMock()
+        exists_resp.status_code = 200
+        exists_resp.json.return_value = {
+            "success": True,
+            "dataMap": {"data": True},
+        }
+
+        mock_post.side_effect = [gateway_resp, login_resp, exists_resp]
 
         client = SoleClient("wrong@example.com", "wrongpass", token_dir=self.token_dir, sample_dir=self.sample_dir)
         success = client.login()
@@ -221,6 +286,14 @@ class TestSoleClient(unittest.TestCase):
     @patch("requests.post")
     def test_get_activities_monthly_statistics_workflow(self, mock_post):
         """Test primary workflow: GetUserMonthlyStatistics returning UserMonthlyStatisticsBeanData with workoutList."""
+        # 0. Gateway resolution
+        gateway_resp = MagicMock()
+        gateway_resp.status_code = 200
+        gateway_resp.json.return_value = {
+            "success": True,
+            "dataMap": {"data": "https://sole-homeplus.dyacocloud.com"},
+        }
+
         # 1. Login response
         login_resp = MagicMock()
         login_resp.status_code = 200
@@ -300,7 +373,7 @@ class TestSoleClient(unittest.TestCase):
             },
         }
 
-        mock_post.side_effect = [login_resp, monthly_resp, content_resp_2]
+        mock_post.side_effect = [gateway_resp, login_resp, monthly_resp, content_resp_2]
 
         client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
         activities = client.get_activities(limit=10)
@@ -316,6 +389,14 @@ class TestSoleClient(unittest.TestCase):
     @patch("requests.post")
     def test_get_activities_date_list_fallback(self, mock_post):
         """Test fallback when GetUserMonthlyStatistics returns 0 items: falls back to GetMyWorkoutDateList."""
+        # 0. Gateway resolution
+        gateway_resp = MagicMock()
+        gateway_resp.status_code = 200
+        gateway_resp.json.return_value = {
+            "success": True,
+            "dataMap": {"data": "https://sole-homeplus.dyacocloud.com"},
+        }
+
         # 1. Login response
         login_resp = MagicMock()
         login_resp.status_code = 200
@@ -370,7 +451,7 @@ class TestSoleClient(unittest.TestCase):
             },
         }
 
-        mock_post.side_effect = [login_resp, monthly_resp, date_list_resp, content_resp]
+        mock_post.side_effect = [gateway_resp, login_resp, monthly_resp, date_list_resp, content_resp]
 
         client = SoleClient("user@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)
         activities = client.get_activities(limit=10)

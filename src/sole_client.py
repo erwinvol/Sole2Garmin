@@ -148,10 +148,20 @@ class SoleClient:
         return headers
 
     def login(self) -> bool:
-        """Authenticate with Dyaco / SOLE+ API via POST api/LoginByEmail."""
+        """Authenticate with Dyaco / SOLE+ API via POST api/LoginByEmail.
+
+        Implements exact flow reverse-engineered from LoginFragment$submitLoginByEmail$1:
+        1. Resolve assigned cluster server address via POST api/GetLoginServerAddress
+        2. Authenticate directly against the assigned cluster via POST api/LoginByEmail
+        """
         if not self.email or not self.password:
             logger.warning("SOLE_EMAIL and SOLE_PASSWORD not configured. Skipping cloud login.")
             return False
+
+        # Step 1: Pre-login cluster resolution via Dyaco global gateway
+        resolved_server = self._resolve_login_server_address()
+        if resolved_server:
+            self.base_url = resolved_server
 
         logger.info("Authenticating with SOLE+ backend (%s) as %s...", self.base_url, self.email)
 
@@ -189,11 +199,27 @@ class SoleClient:
                         if err_code == 112:
                             logger.error(
                                 "SOLE+ error 112 (LOGIN_ERR_WRONG_PWD_OR_USERNAME): Invalid account or password. "
-                                "Please verify SOLE_EMAIL and SOLE_PASSWORD. If your SOLE+ account was originally "
-                                "created via 'Sign in with Google' or Apple ID, use the SOLE+ app 'Forgot Password' "
-                                "screen to establish a direct password for %s.",
-                                self.email,
+                                "Please verify SOLE_EMAIL and SOLE_PASSWORD.",
                             )
+                            # Diagnose registration status via Dyaco global gateway
+                            exists_email = self.check_user_exists(register_type=1)
+                            if exists_email is False:
+                                exists_google = self.check_user_exists(register_type=2)
+                                if exists_google is True:
+                                    logger.error(
+                                        "Account diagnostic: '%s' is registered via 'Sign in with Google' (RegisterType.GOOGLE), "
+                                        "not direct email. Please use the SOLE+ mobile app 'Forgot Password' screen to set a direct "
+                                        "password for %s, or register a direct email account.",
+                                        self.email,
+                                        self.email,
+                                    )
+                                else:
+                                    logger.error(
+                                        "Account diagnostic: '%s' was NOT found in Dyaco's user database (IsUserExists returned false).",
+                                        self.email,
+                                    )
+                            elif exists_email is True:
+                                logger.info("Account diagnostic: '%s' is confirmed to exist as a direct email account on Dyaco.", self.email)
                         last_error = f"{err_msg} (ErrorCode: {err_code})"
                         continue
 
@@ -259,58 +285,72 @@ class SoleClient:
                     break
                 last_error = err_msg
 
-        # If primary endpoints failed, attempt resolution via global gateway
-        resolved_server = self._resolve_login_server_address()
-        if resolved_server and resolved_server != self.base_url:
-            logger.info("Retrying login against resolved cluster: %s", resolved_server)
-            try:
-                resp = requests.post(
-                    f"{resolved_server}/api/LoginByEmail",
-                    json=payload,
-                    headers=self._get_headers(),
-                    timeout=20,
-                )
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    if data.get("success", False):
-                        self.base_url = resolved_server
-                        data_map = data.get("dataMap") or {}
-                        raw_u = data_map.get("data")
-                        u_data = raw_u if isinstance(raw_u, dict) else {}
-                        self.session_id = resp.headers.get("sessionid") or data_map.get("sessionId")
-                        self.login_token = data_map.get("loginToken")
-                        self.access_token = self.login_token
-                        self.user_id = str(u_data.get("userId") or "")
-                        self.token_expiry = time.time() + 86400 * 30
-                        self._save_cached_token()
-                        logger.info("Successfully authenticated via resolved cluster %s", resolved_server)
-                        return True
-            except Exception as exc:
-                logger.debug("Retry against resolved cluster failed: %s", exc)
-
         logger.warning("Could not authenticate against SOLE+ cloud (%s).", last_error)
         return False
 
-    def _resolve_login_server_address(self) -> Optional[str]:
-        """Query global gateway for user's assigned cluster server address."""
-        global_url = "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress"
+    def check_user_exists(self, register_type: int = 1) -> Optional[bool]:
+        """Check if user account exists on Dyaco global gateway.
+
+        Reverse-engineered from DyacoApiKt.callIsUserExists:
+        POST https://homeglobal.dyacocloud.com/api/IsUserExists
+        Body: {"registerType": 1, "email": email}
+        Response: {"success": true, "dataMap": {"data": true}}
+        """
+        global_url = "https://homeglobal.dyacocloud.com/api/IsUserExists"
         headers = self._get_headers()
-        payload = {"email": self.email, "brandCode": self.BRAND_CODE}
+        payload = {"registerType": register_type, "email": self.email}
         try:
             resp = requests.post(global_url, json=payload, headers=headers, timeout=10)
-            logger.info("Dyaco GetLoginServerAddress [%s]: HTTP %s, Response: %s", global_url, resp.status_code, resp.text[:300])
+            logger.info(
+                "Dyaco IsUserExists (registerType=%d) [%s]: HTTP %s, Response: %s",
+                register_type,
+                global_url,
+                resp.status_code,
+                resp.text[:300],
+            )
             if resp.status_code == 200:
                 data = resp.json()
-                data_map = data.get("dataMap") or {}
-                server_addr = (
-                    data_map.get("serverAddress")
-                    or data_map.get("serverUrl")
-                    or data_map.get("domain")
-                    or data.get("serverAddress")
-                )
-                if server_addr and isinstance(server_addr, str) and server_addr.startswith("http"):
-                    logger.info("Resolved cluster server address from Dyaco global gateway: %s", server_addr)
-                    return server_addr.rstrip("/")
+                if data.get("success", False):
+                    data_map = data.get("dataMap") or {}
+                    return bool(data_map.get("data"))
+        except Exception as exc:
+            logger.warning("IsUserExists query failed: %s", exc)
+        return None
+
+    def _resolve_login_server_address(self, register_type: int = 1) -> Optional[str]:
+        """Query Dyaco global gateway for user's assigned cluster server address.
+
+        Reverse-engineered from LoginFragment$submitLoginByEmail$1:
+        POST https://homeglobal.dyacocloud.com/api/GetLoginServerAddress
+        Body: {"registerType": 1, "email": email}
+        Response: {"success": true, "dataMap": {"data": "https://..."}}
+        """
+        global_url = "https://homeglobal.dyacocloud.com/api/GetLoginServerAddress"
+        headers = self._get_headers()
+        payload = {"registerType": register_type, "email": self.email}
+        try:
+            resp = requests.post(global_url, json=payload, headers=headers, timeout=10)
+            logger.info(
+                "Dyaco GetLoginServerAddress (registerType=%d) [%s]: HTTP %s, Response: %s",
+                register_type,
+                global_url,
+                resp.status_code,
+                resp.text[:300],
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success", False):
+                    data_map = data.get("dataMap") or {}
+                    # In decompiled GetLoginServerAddressApiData$DataMap, server URL is in field "data"
+                    server_addr = (
+                        data_map.get("data")
+                        or data_map.get("serverAddress")
+                        or data_map.get("serverUrl")
+                    )
+                    if server_addr and isinstance(server_addr, str) and server_addr.startswith("http"):
+                        clean_addr = server_addr.rstrip("/")
+                        logger.info("Resolved cluster server address from Dyaco global gateway: %s", clean_addr)
+                        return clean_addr
         except Exception as exc:
             logger.warning("GetLoginServerAddress query failed: %s", exc)
         return None

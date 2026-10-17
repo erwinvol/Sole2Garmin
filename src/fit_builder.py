@@ -11,17 +11,14 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def parse_timestamp_ms(date_str: str) -> int:
-    """Parse an ISO date string into unix milliseconds."""
-    try:
-        # Handle trailing Z
-        cleaned = date_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(cleaned)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+def parse_timestamp_ms(date_val: Any) -> int:
+    """Parse various timestamp representations into unix milliseconds."""
+    from src.garmin_client import parse_activity_datetime
+
+    dt = parse_activity_datetime(date_val)
+    if dt:
         return int(dt.timestamp() * 1000)
-    except Exception:
-        return int(datetime.now(timezone.utc).timestamp() * 1000)
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
 class FitBuilder:
@@ -60,13 +57,21 @@ class FitBuilder:
         from fit_tool.fit_file_builder import FitFileBuilder
         from fit_tool.profile.messages.file_id_message import FileIdMessage
         from fit_tool.profile.messages.device_info_message import DeviceInfoMessage
+        from fit_tool.profile.messages.event_message import EventMessage
         from fit_tool.profile.messages.sport_message import SportMessage
         from fit_tool.profile.messages.record_message import RecordMessage
         from fit_tool.profile.messages.lap_message import LapMessage
         from fit_tool.profile.messages.session_message import SessionMessage
+        from fit_tool.profile.messages.activity_message import ActivityMessage
         from fit_tool.profile.profile_type import (
+            ActivityType,
+            Event,
+            EventType,
             FileType,
+            Intensity,
+            LapTrigger,
             Manufacturer,
+            SessionTrigger,
             Sport,
             SubSport,
         )
@@ -77,6 +82,7 @@ class FitBuilder:
 
         start_time_ms = parse_timestamp_ms(activity.get("date", ""))
         duration_s = max(float(activity.get("duration_seconds", 0.0)), 10.0)
+        end_time_ms = start_time_ms + int(duration_s * 1000)
         distance_m = max(float(activity.get("distance_meters", 0.0)), 10.0)
         calories = int(activity.get("calories", 0))
 
@@ -100,10 +106,12 @@ class FitBuilder:
             fit_sport = Sport.CYCLING
             fit_sub_sport = SubSport.INDOOR_CYCLING
             sport_name = "Indoor Cycling"
+            act_type = ActivityType.CYCLING
         elif sport_str == "FITNESS_EQUIPMENT":
             fit_sport = Sport.FITNESS_EQUIPMENT
             fit_sub_sport = SubSport.ELLIPTICAL
             sport_name = "Elliptical"
+            act_type = ActivityType.FITNESS_EQUIPMENT
         elif sport_str == "WALKING":
             fit_sport = Sport.WALKING
             if sub_sport_str in ("INDOOR_WALKING", "INDOOR"):
@@ -112,6 +120,7 @@ class FitBuilder:
             else:
                 fit_sub_sport = SubSport.GENERIC
                 sport_name = "Walking"
+            act_type = ActivityType.WALKING
         else:  # RUNNING
             fit_sport = Sport.RUNNING
             if sub_sport_str in ("INDOOR_RUNNING", "INDOOR"):
@@ -123,6 +132,7 @@ class FitBuilder:
             else:
                 fit_sub_sport = SubSport.INDOOR_RUNNING
                 sport_name = "Indoor Running"
+            act_type = ActivityType.RUNNING
 
         builder = FitFileBuilder(auto_define=True)
 
@@ -141,16 +151,24 @@ class FitBuilder:
         dev_info.manufacturer = Manufacturer.GARMIN.value
         dev_info.product = self.device_product_id
         dev_info.software_version = self.software_version
+        dev_info.timestamp = start_time_ms
         builder.add(dev_info)
 
-        # 3. Sport
+        # 3. Timer Start Event
+        ev_start = EventMessage()
+        ev_start.timestamp = start_time_ms
+        ev_start.event = Event.TIMER
+        ev_start.event_type = EventType.START
+        builder.add(ev_start)
+
+        # 4. Sport
         sport_msg = SportMessage()
         sport_msg.sport = fit_sport
         sport_msg.sub_sport = fit_sub_sport
         sport_msg.sport_name = sport_name
         builder.add(sport_msg)
 
-        # 4. Records (Time-series)
+        # 5. Records (Time-series)
         data_points = activity.get("data_points") or []
         if data_points:
             # Use real data points
@@ -198,10 +216,16 @@ class FitBuilder:
                 curr_dist += dist_per_step
                 curr_alt += alt_step
 
-        # 5. Lap
+        # 6. Timer Stop Event
+        ev_stop = EventMessage()
+        ev_stop.timestamp = end_time_ms
+        ev_stop.event = Event.TIMER
+        ev_stop.event_type = EventType.STOP_ALL
+        builder.add(ev_stop)
+
+        # 7. Lap
         lap = LapMessage()
-        lap.sport = fit_sport
-        lap.sub_sport = fit_sub_sport
+        lap.timestamp = end_time_ms
         lap.start_time = start_time_ms
         lap.total_elapsed_time = duration_s
         lap.total_timer_time = duration_s
@@ -214,12 +238,15 @@ class FitBuilder:
         lap.avg_cadence = avg_cadence
         lap.max_cadence = max_cadence
         lap.total_ascent = total_ascent
+        lap.sport = fit_sport
+        lap.sub_sport = fit_sub_sport
+        lap.intensity = Intensity.ACTIVE
+        lap.lap_trigger = LapTrigger.SESSION_END
         builder.add(lap)
 
-        # 6. Session
+        # 8. Session
         sess = SessionMessage()
-        sess.sport = fit_sport
-        sess.sub_sport = fit_sub_sport
+        sess.timestamp = end_time_ms
         sess.start_time = start_time_ms
         sess.total_elapsed_time = duration_s
         sess.total_timer_time = duration_s
@@ -232,9 +259,22 @@ class FitBuilder:
         sess.avg_cadence = avg_cadence
         sess.max_cadence = max_cadence
         sess.total_ascent = total_ascent
+        sess.sport = fit_sport
+        sess.sub_sport = fit_sub_sport
         sess.num_laps = 1
         sess.first_lap_index = 0
+        sess.trigger = SessionTrigger.ACTIVITY_END
         builder.add(sess)
+
+        # 9. Activity
+        act_msg = ActivityMessage()
+        act_msg.timestamp = end_time_ms
+        act_msg.total_timer_time = duration_s
+        act_msg.num_sessions = 1
+        act_msg.type = act_type
+        act_msg.event = Event.ACTIVITY
+        act_msg.event_type = EventType.STOP
+        builder.add(act_msg)
 
         fit_file = builder.build()
         with open(dest_path, "wb") as f:

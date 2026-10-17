@@ -133,7 +133,13 @@ class GarminClient:
             logger.error("Garmin Connect rate limit (HTTP 429) hit during cached login. Please wait before retrying.")
             raise
         except Exception as cached_exc:
-            logger.debug("Cached token login failed (%s). Attempting credential login...", cached_exc)
+            logger.warning("Cached Garmin token login failed (%s). Purging stale token cache...", cached_exc)
+            token_file = self.token_dir / "garmin_tokens.json" if self.token_dir.is_dir() else self.token_dir
+            if token_file.exists():
+                try:
+                    token_file.unlink()
+                except Exception:
+                    pass
 
         # Attempt 2: Login with username/password and persist new tokens
         if not self.username or not self.password:
@@ -176,13 +182,15 @@ class GarminClient:
         self,
         activity_date_str: Optional[str],
         activity_name: Optional[str] = None,
-        threshold_hours: int = 2,
+        target_sport: Optional[str] = None,
+        threshold_hours: int = 1,
     ) -> bool:
         """Check if an activity matching the given timestamp already exists on Garmin Connect.
 
         Args:
             activity_date_str: Raw date or timestamp string.
             activity_name: Optional name for fuzzy comparison.
+            target_sport: Optional sport (e.g. WALKING, RUNNING) to avoid cross-sport false positives.
             threshold_hours: Time difference window to consider as duplicate.
 
         Returns:
@@ -212,9 +220,27 @@ class GarminClient:
                     hours_diff = abs((act_dt - target_dt).total_seconds()) / 3600.0
                     if hours_diff <= threshold_hours:
                         existing_title = act.get("activityName", "")
+                        type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
+
+                        # Prevent cross-sport false positives (e.g., walking workout skipped due to virtual cycling)
+                        if target_sport:
+                            norm_target = str(target_sport).upper()
+                            is_target_pedestrian = norm_target in ("WALKING", "RUNNING")
+                            is_act_cycling = "cycl" in type_key or "ride" in type_key or "bike" in type_key
+                            if is_target_pedestrian and is_act_cycling:
+                                logger.info(
+                                    "Ignoring Garmin activity '%s' (%s) at %s because it is cycling while target is %s.",
+                                    existing_title,
+                                    type_key,
+                                    format_local_datetime(act_dt),
+                                    norm_target,
+                                )
+                                continue
+
                         logger.warning(
-                            "Found potential duplicate activity on Garmin: '%s' at %s (diff: %.1f hrs)",
+                            "Found potential duplicate activity on Garmin: '%s' (%s) at %s (diff: %.1f hrs)",
                             existing_title,
+                            type_key or "unknown",
                             format_local_datetime(act_dt),
                             hours_diff,
                         )
@@ -252,7 +278,7 @@ class GarminClient:
         for attempt in range(1, 4):
             try:
                 response = self._client.upload_activity(fit_file_path)
-                logger.info("Upload to Garmin Connect successful!")
+                logger.info("Upload to Garmin Connect successful! Response: %s", response)
                 return {"status": "uploaded", "response": response}
 
             except Exception as exc:
@@ -269,3 +295,42 @@ class GarminClient:
 
                 logger.exception("Garmin Connect upload failed: %s", exc)
                 raise RuntimeError(f"Garmin Connect upload failed: {exc}") from exc
+
+
+if __name__ == "__main__":
+    import argparse
+    import getpass
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    parser = argparse.ArgumentParser(description="Authenticate with Garmin Connect and save tokens.")
+    parser.add_argument("--token-dir", default=os.getenv("GARMIN_TOKEN_DIR", "data/garmin_tokens"), help="Directory to save Garmin tokens")
+    parser.add_argument("--username", default=os.getenv("GARMIN_USERNAME"), help="Garmin Connect email")
+    parser.add_argument("--password", default=os.getenv("GARMIN_PASSWORD"), help="Garmin Connect password")
+    args = parser.parse_args()
+
+    email = args.username or input("Garmin Connect Email: ").strip()
+    password = args.password or getpass.getpass("Garmin Connect Password: ").strip()
+
+    from garminconnect import Garmin
+
+    def mfa_prompt():
+        return input("Garmin MFA/2FA Verification Code: ").strip()
+
+    print(f"Authenticating with Garmin Connect as {email}...")
+    token_path = Path(args.token_dir)
+    token_path.mkdir(parents=True, exist_ok=True)
+
+    try:
+        client = Garmin(email, password, prompt_mfa=mfa_prompt)
+        client.login()
+        try:
+            client.client.dump(str(token_path))
+        except AttributeError:
+            if hasattr(client, "garth"):
+                client.garth.dump(str(token_path))
+        print(f"Success! Garmin tokens saved to {token_path}")
+    except Exception as exc:
+        print(f"Authentication failed: {exc}", file=sys.stderr)
+        sys.exit(1)

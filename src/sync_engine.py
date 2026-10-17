@@ -134,19 +134,15 @@ class SyncEngine:
             avg_kmh = avg_mps * 3.6
 
             current_sport = str(activity.get("sport", "RUNNING")).upper()
-            if self.config.walk_run_threshold_kmh > 0 and current_sport in ("RUNNING", "WALKING"):
-                if avg_kmh <= self.config.walk_run_threshold_kmh:
+            if current_sport in ("RUNNING", "WALKING"):
+                if self.config.walk_run_threshold_kmh > 0 and avg_kmh <= self.config.walk_run_threshold_kmh:
                     activity["sport"] = "WALKING"
-                    activity["sub_sport"] = "GENERIC"
-                    if "Treadmill Run" in activity.get("name", ""):
-                        activity["name"] = activity["name"].replace("Treadmill Run", "Walking")
-                    elif "Indoor Running" in activity.get("name", ""):
-                        activity["name"] = activity["name"].replace("Indoor Running", "Walking")
+                    activity["sub_sport"] = "INDOOR_WALKING"
+                    activity["name"] = "Sole Treadmill Indoor Walking"
                 else:
                     activity["sport"] = "RUNNING"
                     activity["sub_sport"] = "INDOOR_RUNNING"
-                    if "Sole Walking" in activity.get("name", ""):
-                        activity["name"] = activity["name"].replace("Sole Walking", "Sole Indoor Running")
+                    activity["name"] = "Sole Treadmill Indoor Run"
 
             act_id = activity["id"]
             name = activity["name"]
@@ -192,6 +188,14 @@ class SyncEngine:
                         threshold_hours=self.config.duplicate_threshold_hours,
                     ):
                         logger.warning("Activity %s already present on Garmin Connect. Marking skipped.", act_id)
+                        # Ensure existing duplicate activity has desired title
+                        self.garmin._try_rename_uploaded_activity(
+                            activity_date_str=act_date,
+                            desired_title=name,
+                            target_sport=sport,
+                            retries=1,
+                            delay_sec=0,
+                        )
                         self.store.record_activity(
                             sole_id=act_id,
                             name=name,
@@ -207,7 +211,12 @@ class SyncEngine:
                 generated_path = self.builder.build_fit_from_activity(activity)
 
                 # Upload to Garmin Connect
-                upload_res = self.garmin.upload_activity(generated_path)
+                upload_res = self.garmin.upload_activity(
+                    generated_path,
+                    activity_name=name,
+                    activity_date_str=act_date,
+                    target_sport=sport,
+                )
                 status_code = upload_res.get("status")
 
                 if status_code == "skipped_duplicate":

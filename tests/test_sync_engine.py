@@ -136,7 +136,7 @@ class TestSyncEngine(unittest.TestCase):
     def test_run_sync_applies_walk_run_threshold(self):
         walk_activity = {
             "id": "walk_auto_01",
-            "name": "Sole Treadmill Run",
+            "name": "Sole Workout",
             "date": "2026-10-13T12:00:00Z",
             "sport": "RUNNING",
             "sub_sport": "TREADMILL",
@@ -144,17 +144,37 @@ class TestSyncEngine(unittest.TestCase):
             "distance_meters": 2000.0,
             "avg_speed_mps": 1.11,  # 4.0 km/h <= 6.0 km/h
         }
-        self.mock_sole.get_activities.return_value = [walk_activity]
+        run_activity = {
+            "id": "run_auto_02",
+            "name": "Sole Workout",
+            "date": "2026-10-13T14:00:00Z",
+            "sport": "RUNNING",
+            "sub_sport": "TREADMILL",
+            "duration_seconds": 1800.0,
+            "distance_meters": 4500.0,
+            "avg_speed_mps": 2.5,  # 9.0 km/h > 6.0 km/h
+        }
+        self.mock_sole.get_activities.return_value = [walk_activity, run_activity]
         self.mock_garmin.check_duplicate.return_value = False
         self.mock_garmin.upload_activity.return_value = {"status": "uploaded"}
 
         stats = self.engine.run_sync()
-        self.assertEqual(stats["uploaded"], 1)
+        self.assertEqual(stats["uploaded"], 2)
 
-        # Check recorded sport in sync store
-        recent = self.store.get_recent_synced(1)
-        self.assertEqual(recent[0]["sole_id"], "walk_auto_01")
-        self.assertEqual(recent[0]["sport"], "WALKING")
+        # Check recorded name and sport in sync store
+        recent = self.store.get_recent_synced(2)
+        by_id = {r["sole_id"]: r for r in recent}
+        self.assertEqual(by_id["walk_auto_01"]["sport"], "WALKING")
+        self.assertEqual(by_id["walk_auto_01"]["name"], "Sole Treadmill Indoor Walking")
+
+        self.assertEqual(by_id["run_auto_02"]["sport"], "RUNNING")
+        self.assertEqual(by_id["run_auto_02"]["name"], "Sole Treadmill Indoor Run")
+
+        # Verify upload_activity calls passed exact labels
+        calls = self.mock_garmin.upload_activity.call_args_list
+        called_names = [call.kwargs.get("activity_name") for call in calls]
+        self.assertIn("Sole Treadmill Indoor Walking", called_names)
+        self.assertIn("Sole Treadmill Indoor Run", called_names)
 
 
 if __name__ == "__main__":

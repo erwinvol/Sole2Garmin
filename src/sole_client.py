@@ -504,7 +504,8 @@ class SoleClient:
                                         w_id = w.get("userWorkoutUuid") or w.get("workoutUuid")
                                         if w_id and w_id not in workout_uuids:
                                             workout_uuids.append(w_id)
-                logger.debug("Retrieved %d workouts from GetUserMonthlyStatistics.", len(raw_workouts))\n            else:
+                logger.debug("Retrieved %d workouts from GetUserMonthlyStatistics.", len(raw_workouts))
+            else:
                 logger.warning("GetUserMonthlyStatistics returned HTTP %d: %s", resp.status_code, resp.text[:200])
         except RequestException as exc:
             logger.warning("GetUserMonthlyStatistics request failed: %s", exc)

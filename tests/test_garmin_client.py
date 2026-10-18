@@ -175,6 +175,51 @@ class TestGarminClient(unittest.TestCase):
         # No updates needed if both type and title are already correct
         self.mock_client.client.put.assert_not_called()
 
+    def test_try_rename_uploaded_activity_authenticates_if_needed(self):
+        self.garmin._authenticated = False
+        self.garmin.authenticate = MagicMock(return_value=True)
+        self.mock_client.get_activities_by_date.return_value = []
+
+        self.garmin._try_rename_uploaded_activity(
+            activity_date_str="2026-10-13T17:37:35+00:00",
+            desired_title="Sole Treadmill Indoor Walking",
+            retries=1,
+            delay_sec=0,
+        )
+
+        self.garmin.authenticate.assert_called_once()
+
+    def test_try_rename_uploaded_activity_matches_with_begin_timestamp(self):
+        # 2026-10-13 17:37:35 UTC = epoch 1791913055
+        self.mock_client.get_activities_by_date.return_value = [
+            {
+                "activityId": 445566,
+                "activityName": "Walking",
+                "beginTimestamp": 1791913055000,
+                "activityType": {"typeId": 9, "typeKey": "walking", "parentTypeId": 17},
+            }
+        ]
+        self.mock_client.client.put.return_value = {"status": "ok"}
+
+        success = self.garmin._try_rename_uploaded_activity(
+            activity_date_str="2026-10-13T17:37:35+00:00",
+            desired_title="Sole Treadmill Indoor Walking",
+            target_sport="WALKING",
+            retries=1,
+            delay_sec=0,
+        )
+
+        self.assertTrue(success)
+        self.mock_client.client.put.assert_called_once_with(
+            "connectapi",
+            "/activity-service/activity/445566",
+            json={
+                "activityId": 445566,
+                "activityName": "Sole Treadmill Indoor Walking",
+            },
+            api=True,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

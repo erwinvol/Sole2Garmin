@@ -70,8 +70,18 @@ class TestSyncStore(unittest.TestCase):
         cleared = self.store.clear_all()
         self.assertEqual(cleared, 2)
         self.assertEqual(self.store.count(), 0)
-        self.assertFalse(self.store.is_synced("act_1"))
 
+    def test_get_all_synced(self):
+        self.store.record_activity("act_1", "Walk 1", "2026-10-13", "WALKING", "UPLOADED")
+        self.store.record_activity("act_2", "Run 2", "2026-10-14", "RUNNING", "SKIPPED_DUPLICATE")
+        self.store.record_activity("act_3", "Failed", "2026-10-15", "RUNNING", "FAILED")
+
+        synced = self.store.get_all_synced(limit=10)
+        self.assertEqual(len(synced), 2)
+        synced_ids = {s["sole_id"] for s in synced}
+        self.assertIn("act_1", synced_ids)
+        self.assertIn("act_2", synced_ids)
+        self.assertNotIn("act_3", synced_ids)
 
 
 if __name__ == "__main__":

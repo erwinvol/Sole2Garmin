@@ -176,6 +176,26 @@ class TestSyncEngine(unittest.TestCase):
         self.assertIn("Sole Treadmill Indoor Walking", called_names)
         self.assertIn("Sole Treadmill Indoor Run", called_names)
 
+    def test_sync_previously_synced_activities(self):
+        self.store.record_activity("walk_old", "Walking", "2026-10-13T10:00:00Z", "WALKING", "UPLOADED")
+        self.mock_garmin._try_rename_uploaded_activity.return_value = True
+
+        updated = self.engine.sync_previously_synced_activities(limit=5)
+        self.assertEqual(updated, 1)
+
+        self.mock_garmin._try_rename_uploaded_activity.assert_called_with(
+            activity_date_str="2026-10-13T10:00:00Z",
+            desired_title="Sole Treadmill Indoor Walking",
+            target_sport="WALKING",
+            retries=1,
+            delay_sec=0,
+            threshold_hours=2,
+        )
+
+        # Database record should be updated to new title
+        recent = self.store.get_recent_synced(1)
+        self.assertEqual(recent[0]["name"], "Sole Treadmill Indoor Walking")
+
 
 if __name__ == "__main__":
     unittest.main()

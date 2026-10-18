@@ -82,6 +82,9 @@ class SyncStore:
                     sole_id, name, activity_date, sport, synced_at, garmin_status, notes
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(sole_id) DO UPDATE SET
+                    name = excluded.name,
+                    activity_date = excluded.activity_date,
+                    sport = excluded.sport,
                     garmin_status = excluded.garmin_status,
                     synced_at = excluded.synced_at,
                     notes = excluded.notes
@@ -98,6 +101,21 @@ class SyncStore:
                 """
                 SELECT sole_id, name, activity_date, sport, synced_at, garmin_status, notes
                 FROM synced_activities
+                ORDER BY synced_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_synced(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return previously synced activities with status UPLOADED or SKIPPED_DUPLICATE."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT sole_id, name, activity_date, sport, synced_at, garmin_status, notes
+                FROM synced_activities
+                WHERE garmin_status IN ('UPLOADED', 'SKIPPED_DUPLICATE')
                 ORDER BY synced_at DESC
                 LIMIT ?
                 """,

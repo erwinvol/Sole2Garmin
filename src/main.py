@@ -87,6 +87,7 @@ def main() -> None:
     parser.add_argument("--status", action="store_true", help="Display local sync database history and exit.")
     parser.add_argument("--re-sync", action="store_true", help="Clear sync database history and trigger a fresh sync run.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate sync without uploading to Garmin Connect or persisting.")
+    parser.add_argument("--update-titles", action="store_true", help="Retroactively update titles and categories for previously synced activities on Garmin Connect.")
     parser.add_argument("--daemon", action="store_true", help="Force daemon polling mode (default when no one-off action is passed).")
 
     args = parser.parse_args()
@@ -106,6 +107,11 @@ def main() -> None:
     # Signal handlers
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+
+    if args.update_titles:
+        count = engine.sync_previously_synced_activities(limit=args.batch or 50)
+        logger.info("Title update completed: %d activities processed.", count)
+        return
 
     if args.re_sync:
         cleared = engine.store.clear_all()

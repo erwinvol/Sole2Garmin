@@ -121,7 +121,12 @@ class SyncEngine:
 
         stats["total_found"] = len(activities)
         if not activities:
-            logger.info("No activities returned from %s provider.", self.config.ingestion_provider)
+            logger.info("No new activities returned from %s provider.", self.config.ingestion_provider)
+            if not dry_run and not sync_latest:
+                try:
+                    self.sync_previously_synced_activities(limit=self.config.sync_batch_size * 2)
+                except Exception as exc:
+                    logger.warning("Error verifying previously synced activities: %s", exc)
             return stats
 
         activities_to_process = activities if sync_latest else list(reversed(activities))
@@ -172,6 +177,7 @@ class SyncEngine:
                         target_sport=sport,
                         retries=1,
                         delay_sec=0,
+                        threshold_hours=self.config.duplicate_threshold_hours,
                     )
                 logger.info("Activity %s already marked in sync database. Skipping upload.", act_id)
                 stats["already_synced"] += 1
@@ -204,6 +210,7 @@ class SyncEngine:
                             target_sport=sport,
                             retries=1,
                             delay_sec=0,
+                            threshold_hours=self.config.duplicate_threshold_hours,
                         )
                         self.store.record_activity(
                             sole_id=act_id,
@@ -273,4 +280,67 @@ class SyncEngine:
             stats["skipped_duplicate"],
             stats["failed"],
         )
+
+        if not dry_run and not sync_latest:
+            try:
+                self.sync_previously_synced_activities(limit=self.config.sync_batch_size * 2)
+            except Exception as exc:
+                logger.warning("Error verifying previously synced activities: %s", exc)
+
         return stats
+
+    def sync_previously_synced_activities(self, limit: int = 20) -> int:
+        """Retroactively update titles and sport categories on Garmin Connect for previously synced activities.
+
+        Returns:
+            Count of activities verified/updated.
+        """
+        if not self.config.check_duplicates:
+            return 0
+
+        synced_records = self.store.get_all_synced(limit=limit)
+        if not synced_records:
+            return 0
+
+        logger.info("Verifying %d previously recorded activities in Garmin Connect for correct titles...", len(synced_records))
+        updated_count = 0
+
+        for record in synced_records:
+            sole_id = record["sole_id"]
+            act_date = record.get("activity_date")
+            if not act_date:
+                continue
+
+            current_sport = str(record.get("sport") or "RUNNING").upper()
+            stored_name = record.get("name") or ""
+
+            if current_sport == "WALKING" or "walk" in stored_name.lower():
+                target_sport = "WALKING"
+                desired_title = "Sole Treadmill Indoor Walking"
+            else:
+                target_sport = "RUNNING"
+                desired_title = "Sole Treadmill Indoor Run"
+
+            success = self.garmin._try_rename_uploaded_activity(
+                activity_date_str=act_date,
+                desired_title=desired_title,
+                target_sport=target_sport,
+                retries=1,
+                delay_sec=0,
+                threshold_hours=self.config.duplicate_threshold_hours,
+            )
+
+            if success:
+                updated_count += 1
+                if stored_name != desired_title or current_sport != target_sport:
+                    self.store.record_activity(
+                        sole_id=sole_id,
+                        name=desired_title,
+                        activity_date=act_date,
+                        sport=target_sport,
+                        status=record.get("garmin_status") or "UPLOADED",
+                        notes=record.get("notes") or "Retroactively updated title and sport",
+                    )
+
+        logger.info("Completed verification of previously synced activities (%d updated/verified).", updated_count)
+        return updated_count

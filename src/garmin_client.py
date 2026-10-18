@@ -179,6 +179,42 @@ class GarminClient:
         if not self._authenticated or self._client is None:
             self.authenticate()
 
+    def _compute_activity_time_difference(self, target_dt: datetime, act: Dict[str, Any]) -> float:
+        """Compute the minimum absolute difference in hours between target_dt and a Garmin activity."""
+        diffs = []
+
+        # 1. Epoch beginTimestamp (milliseconds UTC)
+        if act.get("beginTimestamp"):
+            try:
+                dt_begin = datetime.fromtimestamp(float(act["beginTimestamp"]) / 1000.0, tz=timezone.utc)
+                diffs.append(abs((dt_begin - target_dt).total_seconds()) / 3600.0)
+            except Exception:
+                pass
+
+        # 2. startTimeGMT (UTC string)
+        start_gmt = act.get("startTimeGMT")
+        if start_gmt:
+            dt_gmt = parse_activity_datetime(start_gmt)
+            if dt_gmt:
+                diffs.append(abs((dt_gmt - target_dt).total_seconds()) / 3600.0)
+
+        # 3. startTimeLocal (local naive or ISO string)
+        start_local = act.get("startTimeLocal") or act.get("startTime")
+        if start_local:
+            try:
+                clean_local = str(start_local).strip().replace("T", " ")
+                if "." in clean_local:
+                    clean_local = clean_local.split(".")[0]
+                dt_local_naive = datetime.strptime(clean_local, "%Y-%m-%d %H:%M:%S")
+                target_local_naive = target_dt.astimezone().replace(tzinfo=None)
+                diffs.append(abs((dt_local_naive - target_local_naive).total_seconds()) / 3600.0)
+            except Exception:
+                dt_local = parse_activity_datetime(start_local)
+                if dt_local:
+                    diffs.append(abs((dt_local - target_dt).total_seconds()) / 3600.0)
+
+        return min(diffs) if diffs else 999.0
+
     def check_duplicate(
         self,
         activity_date_str: Optional[str],
@@ -214,14 +250,7 @@ class GarminClient:
                 logger.info("Found %d existing activities on Garmin between %s and %s", len(existing_activities), start_date, end_date)
 
                 for act in existing_activities:
-                    start_gmt = act.get("startTimeGMT")
-                    start_local = act.get("startTimeLocal") or act.get("startTime")
-                    dt_gmt = parse_activity_datetime(start_gmt)
-                    dt_local = parse_activity_datetime(start_local)
-
-                    diff_gmt = abs((dt_gmt - target_dt).total_seconds()) / 3600.0 if dt_gmt else 999.0
-                    diff_local = abs((dt_local - target_dt).total_seconds()) / 3600.0 if dt_local else 999.0
-                    hours_diff = min(diff_gmt, diff_local)
+                    hours_diff = self._compute_activity_time_difference(target_dt, act)
 
                     if hours_diff <= threshold_hours:
                         existing_title = act.get("activityName", "")
@@ -365,10 +394,14 @@ class GarminClient:
         target_sport: Optional[str] = None,
         retries: int = 3,
         delay_sec: int = 4,
+        threshold_hours: float = 2.0,
     ) -> bool:
         """Find the uploaded activity on Garmin Connect matching activity_date_str and update its title and type."""
+        self.ensure_authenticated()
+
         target_dt = parse_activity_datetime(activity_date_str)
         if not target_dt:
+            logger.warning("Could not parse activity datetime '%s' for Garmin renaming.", activity_date_str)
             return False
 
         start_date = (target_dt - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -379,21 +412,23 @@ class GarminClient:
                 time.sleep(delay_sec)
             try:
                 activities = self._client.get_activities_by_date(start_date, end_date) or []
+                logger.info(
+                    "Checking %d Garmin activities between %s and %s for '%s' (target: %s)...",
+                    len(activities),
+                    start_date,
+                    end_date,
+                    desired_title,
+                    target_dt.isoformat(),
+                )
                 for act in activities:
-                    start_gmt = act.get("startTimeGMT")
-                    start_local = act.get("startTimeLocal") or act.get("startTime")
-                    dt_gmt = parse_activity_datetime(start_gmt)
-                    dt_local = parse_activity_datetime(start_local)
+                    hours_diff = self._compute_activity_time_difference(target_dt, act)
 
-                    diff_gmt = abs((dt_gmt - target_dt).total_seconds()) / 3600.0 if dt_gmt else 999.0
-                    diff_local = abs((dt_local - target_dt).total_seconds()) / 3600.0 if dt_local else 999.0
-                    hours_diff = min(diff_gmt, diff_local)
-
-                    if hours_diff <= 1.0:
+                    if hours_diff <= threshold_hours:
                         type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
                         if target_sport:
                             norm_target = str(target_sport).upper()
-                            if norm_target in ("WALKING", "RUNNING") and ("cycl" in type_key or "ride" in type_key):
+                            if norm_target in ("WALKING", "RUNNING") and ("cycl" in type_key or "ride" in type_key or "bike" in type_key):
+                                logger.debug("Skipping cycling activity %s for pedestrian target %s", act.get("activityId"), norm_target)
                                 continue
 
                         act_id = act.get("activityId")
@@ -423,14 +458,34 @@ class GarminClient:
                                 desired_type_key or type_key,
                                 type_key,
                             )
-                            self.update_activity(
+                            updated = self.update_activity(
                                 activity_id=str(act_id),
                                 name=desired_title if needs_name_update else current_title,
                                 type_key=desired_type_key,
                             )
-                        return True
+                            if updated:
+                                logger.info("Successfully updated Garmin activity %s to '%s'", act_id, desired_title)
+                                return True
+                        else:
+                            logger.info(
+                                "Garmin activity %s already matches: title='%s', type='%s'",
+                                act_id,
+                                current_title,
+                                type_key,
+                            )
+                            return True
+
+                logger.warning(
+                    "No matching Garmin activity found within ±%.1fh for target %s (window: %s to %s).",
+                    threshold_hours,
+                    target_dt.isoformat(),
+                    start_date,
+                    end_date,
+                )
+                return False
+
             except Exception as exc:
-                logger.debug("Rename/update attempt %d for %s-%s failed: %s", attempt, start_date, end_date, exc)
+                logger.warning("Rename/update attempt %d for %s-%s failed: %s", attempt, start_date, end_date, exc)
 
         return False
 

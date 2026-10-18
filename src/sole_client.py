@@ -504,8 +504,7 @@ class SoleClient:
                                         w_id = w.get("userWorkoutUuid") or w.get("workoutUuid")
                                         if w_id and w_id not in workout_uuids:
                                             workout_uuids.append(w_id)
-                logger.debug("Retrieved %d workouts from GetUserMonthlyStatistics.", len(raw_workouts))
-            else:
+                logger.debug("Retrieved %d workouts from GetUserMonthlyStatistics.", len(raw_workouts))\n            else:
                 logger.warning("GetUserMonthlyStatistics returned HTTP %d: %s", resp.status_code, resp.text[:200])
         except RequestException as exc:
             logger.warning("GetUserMonthlyStatistics request failed: %s", exc)
@@ -726,35 +725,25 @@ class SoleClient:
         ).lower()
 
         # Dyaco machine category conventions: 1 = Treadmill, 2 = Bike, 3 = Elliptical, 4 = Rower
+        program_name = item.get("programName") or item.get("title") or item.get("name")
         if machine_cat == 2 or "bike" in machine_model or "cycle" in machine_model:
             sport = "CYCLING"
             sub_sport = "INDOOR_CYCLING"
             default_name = "Sole Indoor Cycling"
+            name = f"{default_name} - {program_name}" if program_name and not program_name.startswith("Sole ") else (program_name or default_name)
         elif machine_cat == 3 or "elliptical" in machine_model:
             sport = "FITNESS_EQUIPMENT"
             sub_sport = "ELLIPTICAL"
             default_name = "Sole Elliptical Session"
+            name = f"{default_name} - {program_name}" if program_name and not program_name.startswith("Sole ") else (program_name or default_name)
         elif self.walk_run_threshold_kmh > 0 and avg_speed_kmh <= self.walk_run_threshold_kmh:
             sport = "WALKING"
-            sub_sport = "GENERIC"
-            default_name = "Sole Walking"
+            sub_sport = "INDOOR_WALKING"
+            name = "Sole Treadmill Indoor Walking"
         else:
             sport = "RUNNING"
             sub_sport = "INDOOR_RUNNING"
-            default_name = "Sole Indoor Running"
-
-        program_name = item.get("programName") or item.get("title") or item.get("name")
-        if program_name:
-            if program_name.startswith("Sole "):
-                name = program_name
-            elif sport == "WALKING":
-                name = f"Sole Walking - {program_name}"
-            elif sport == "RUNNING":
-                name = f"Sole Indoor Running - {program_name}"
-            else:
-                name = f"{default_name} - {program_name}"
-        else:
-            name = default_name
+            name = "Sole Treadmill Indoor Run"
 
         # Heart Rate
         avg_hr = int(item.get("avgHeartRate") or item.get("avg_hr") or item.get("avg_heart_rate") or item.get("heart_rate") or 0)
@@ -830,9 +819,13 @@ class SoleClient:
             if pt_dist is not None:
                 point_record["distance"] = pt_dist
             if "heartRate" in pt or "heart_rate" in pt or "hr" in pt:
-                point_record["heart_rate"] = int(pt.get("heartRate") or pt.get("heart_rate") or pt.get("hr", 0))
+                hr_v = int(pt.get("heartRate") or pt.get("heart_rate") or pt.get("hr", 0))
+                if hr_v > 0:
+                    point_record["heart_rate"] = hr_v
             if "cadence" in pt or "spm" in pt or "rpm" in pt:
-                point_record["cadence"] = int(pt.get("cadence") or pt.get("spm") or pt.get("rpm", 0))
+                cad_v = int(pt.get("cadence") or pt.get("spm") or pt.get("rpm", 0))
+                if cad_v > 0:
+                    point_record["cadence"] = cad_v
             if "altitude" in pt or "elevation" in pt:
                 point_record["altitude"] = float(pt.get("altitude") or pt.get("elevation", 0.0))
             if "incline" in pt or "grade" in pt:

@@ -234,7 +234,7 @@ class GarminClient:
                                     type_key,
                                     format_local_datetime(act_dt),
                                     norm_target,
-                                    )
+                                )
                                 continue
 
                         logger.warning(
@@ -382,25 +382,34 @@ if __name__ == "__main__":
     import sys
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    parser = argparse.ArgumentParser(description="Authenticate and generate tokens for Garmin Connect.")
-    parser.add_argument("--token-dir", default=os.getenv("GARMIN_TOKEN_DIR", "data/garmin_tokens"), help="Token output directory")
+
+    parser = argparse.ArgumentParser(description="Authenticate with Garmin Connect and save tokens.")
+    parser.add_argument("--token-dir", default=os.getenv("GARMIN_TOKEN_DIR", "data/garmin_tokens"), help="Directory to save Garmin tokens")
     parser.add_argument("--username", default=os.getenv("GARMIN_USERNAME"), help="Garmin Connect email")
+    parser.add_argument("--password", default=os.getenv("GARMIN_PASSWORD"), help="Garmin Connect password")
     args = parser.parse_args()
 
-    token_dir = Path(args.token_dir)
     email = args.username or input("Garmin Connect Email: ").strip()
-    password = os.getenv("GARMIN_PASSWORD") or getpass.getpass("Garmin Connect Password: ")
+    password = args.password or getpass.getpass("Garmin Connect Password: ").strip()
 
-    client = GarminClient(username=email, password=password, token_dir=token_dir)
+    from garminconnect import Garmin
+
+    def mfa_prompt():
+        return input("Garmin MFA/2FA Verification Code: ").strip()
+
     print(f"Authenticating with Garmin Connect as {email}...")
-    try:
-        from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
+    token_path = Path(args.token_dir)
+    token_path.mkdir(parents=True, exist_ok=True)
 
-        client.authenticate()
-        print(f"SUCCESS: Tokens successfully saved to {token_dir.absolute()}")
-    except GarminConnectAuthenticationError as exc:
-        print(f"Authentication failed: {exc}")
-        sys.exit(1)
+    try:
+        client = Garmin(email, password, prompt_mfa=mfa_prompt)
+        client.login()
+        try:
+            client.client.dump(str(token_path))
+        except AttributeError:
+            if hasattr(client, "garth"):
+                client.garth.dump(str(token_path))
+        print(f"Success! Garmin tokens saved to {token_path}")
     except Exception as exc:
-        print(f"Error during authentication: {exc}")
+        print(f"Authentication failed: {exc}", file=sys.stderr)
         sys.exit(1)

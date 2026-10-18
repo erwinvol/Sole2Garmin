@@ -263,31 +263,48 @@ class StravaClient:
         total_ascent = float(raw.get("total_elevation_gain") or 0.0)
 
         # Parse streams into data_points if present
-        data_points = []
+        data_points: List[Dict[str, Any]] = []
         if streams:
             times = streams.get("time", {}).get("data", [])
             distances = streams.get("distance", {}).get("data", [])
-            velocities = streams.get("velocity_smooth", {}).get("data", [])
+            speeds = streams.get("velocity_smooth", {}).get("data", [])
             grades = streams.get("grade_smooth", {}).get("data", [])
             altitudes = streams.get("altitude", {}).get("data", [])
             hrs = streams.get("heartrate", {}).get("data", [])
             cadences = streams.get("cadence", {}).get("data", [])
 
+            # Compute elevation from grade if elevation is flat
+            computed_alt = altitudes[0] if altitudes else 100.0
+            last_dist = 0.0
+
+            from src.fit_builder import parse_timestamp_ms
+            base_time_ms = parse_timestamp_ms(date_str)
+
             for i in range(len(times)):
-                pt = {"timestamp": times[i]}
-                if i < len(distances):
-                    pt["distance"] = distances[i]
-                if i < len(velocities):
-                    pt["speed"] = velocities[i]
-                if i < len(grades):
-                    pt["incline"] = grades[i]
-                if i < len(altitudes):
-                    pt["altitude"] = altitudes[i]
-                if i < len(hrs):
-                    pt["heart_rate"] = hrs[i]
-                if i < len(cadences):
-                    pt["cadence"] = cadences[i]
-                data_points.append(pt)
+                t_sec = times[i]
+                d_m = distances[i] if i < len(distances) else (avg_speed * t_sec)
+                spd = speeds[i] if i < len(speeds) else avg_speed
+                grd = grades[i] if i < len(grades) else 0.0
+                hr = hrs[i] if i < len(hrs) else avg_hr
+                cad = cadences[i] if i < len(cadences) else avg_cadence
+
+                if altitudes and i < len(altitudes):
+                    alt = altitudes[i]
+                else:
+                    dist_delta = max(d_m - last_dist, 0.0)
+                    computed_alt += dist_delta * (grd / 100.0)
+                    alt = computed_alt
+                last_dist = d_m
+
+                data_points.append({
+                    "timestamp": base_time_ms + int(t_sec * 1000),
+                    "distance": d_m,
+                    "speed": spd,
+                    "incline": grd,
+                    "altitude": alt,
+                    "heart_rate": hr,
+                    "cadence": cad,
+                })
 
         return {
             "id": act_id,
@@ -303,13 +320,15 @@ class StravaClient:
             "avg_heart_rate": avg_hr,
             "max_heart_rate": max_hr,
             "avg_cadence": avg_cadence,
+            "max_cadence": avg_cadence + 10 if avg_cadence > 0 else 0,
+            "avg_incline_pct": 1.0,
             "total_ascent_meters": total_ascent,
             "data_points": data_points,
         }
 
     def _load_local_activities(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Load sample workouts from sample_dir."""
-        results = []
+        """Load workouts from local JSON files or FIT files in sample_dir."""
+        results: List[Dict[str, Any]] = []
         if not self.sample_dir.exists():
             return results
 
@@ -318,28 +337,30 @@ class StravaClient:
             try:
                 with open(jf, "r", encoding="utf-8") as f:
                     content = json.load(f)
-                if isinstance(content, dict):
-                    items = content.get("dataMap", {}).get("data") or content.get("data") or [content]
-                    for item in items:
-                        if isinstance(item, dict):
-                            results.append({
-                                "id": f"local_{jf.stem}",
-                                "name": item.get("name", f"Sole Activity ({jf.stem})"),
-                                "date": item.get("date") or datetime.now(timezone.utc).isoformat(),
-                                "sport": "RUNNING",
-                                "sub_sport": "INDOOR_RUNNING",
-                                "duration_seconds": float(item.get("duration", 1800.0)),
-                                "distance_meters": float(item.get("distance", 5000.0)),
-                                "calories": int(item.get("calories", 350)),
-                                "avg_speed_mps": float(item.get("avg_speed", 2.77)),
-                                "max_speed_mps": float(item.get("max_speed", 3.2)),
-                                "avg_heart_rate": int(item.get("avg_hr", 145)),
-                                "max_heart_rate": int(item.get("max_hr", 160)),
-                                "avg_cadence": int(item.get("cadence", 160)),
-                                "total_ascent_meters": float(item.get("elevation", 0.0)),
-                                "data_points": [],
-                            })
+
+                items = content if isinstance(content, list) else (content.get("workouts") or [content])
+                for item in items:
+                    act_id = str(item.get("id") or f"local_{jf.stem}")
+                    results.append({
+                        "id": act_id,
+                        "name": item.get("name", f"Sole Activity ({jf.stem})"),
+                        "date": item.get("date", datetime.now(timezone.utc).isoformat()),
+                        "sport": item.get("sport", "RUNNING").upper(),
+                        "sub_sport": item.get("sub_sport", "TREADMILL").upper(),
+                        "duration_seconds": float(item.get("duration", 1800.0)),
+                        "distance_meters": float(item.get("distance", 5000.0)),
+                        "calories": int(item.get("calories", 350)),
+                        "avg_speed_mps": float(item.get("avg_speed_mps", 2.77)),
+                        "max_speed_mps": float(item.get("max_speed_mps", 3.2)),
+                        "avg_heart_rate": int(item.get("avg_heart_rate", 145)),
+                        "max_heart_rate": int(item.get("max_heart_rate", 160)),
+                        "avg_cadence": int(item.get("avg_cadence", 160)),
+                        "max_cadence": int(item.get("max_cadence", 170)),
+                        "avg_incline_pct": float(item.get("avg_incline", 1.0)),
+                        "total_ascent_meters": float(item.get("elevation_gain", 50.0)),
+                        "data_points": item.get("data_points", []),
+                    })
             except Exception as exc:
-                logger.warning("Could not read local JSON file %s: %s", jf, exc)
+                logger.warning("Error reading local activity JSON %s: %s", jf, exc)
 
         return results[:limit]

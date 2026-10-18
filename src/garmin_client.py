@@ -4,7 +4,7 @@ import locale
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -204,21 +204,25 @@ class GarminClient:
             logger.warning("Could not parse activity datetime '%s'; skipping Garmin duplicate check.", activity_date_str)
             return False
 
-        date_key = target_dt.strftime("%Y-%m-%d")
-        logger.info("Checking Garmin Connect for duplicate activities on %s (±%dh window)...", date_key, threshold_hours)
+        start_date = (target_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        end_date = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info("Checking Garmin Connect for duplicate activities between %s and %s (±%dh window)...", start_date, end_date, threshold_hours)
 
         for attempt in range(1, 4):
             try:
-                existing_activities = self._client.get_activities_by_date(date_key, date_key) or []
-                logger.info("Found %d existing activities on Garmin for %s", len(existing_activities), date_key)
+                existing_activities = self._client.get_activities_by_date(start_date, end_date) or []
+                logger.info("Found %d existing activities on Garmin between %s and %s", len(existing_activities), start_date, end_date)
 
                 for act in existing_activities:
-                    start_str = act.get("startTimeLocal") or act.get("startTimeGMT") or act.get("startTime")
-                    act_dt = parse_activity_datetime(start_str)
-                    if not act_dt:
-                        continue
+                    start_gmt = act.get("startTimeGMT")
+                    start_local = act.get("startTimeLocal") or act.get("startTime")
+                    dt_gmt = parse_activity_datetime(start_gmt)
+                    dt_local = parse_activity_datetime(start_local)
 
-                    hours_diff = abs((act_dt - target_dt).total_seconds()) / 3600.0
+                    diff_gmt = abs((dt_gmt - target_dt).total_seconds()) / 3600.0 if dt_gmt else 999.0
+                    diff_local = abs((dt_local - target_dt).total_seconds()) / 3600.0 if dt_local else 999.0
+                    hours_diff = min(diff_gmt, diff_local)
+
                     if hours_diff <= threshold_hours:
                         existing_title = act.get("activityName", "")
                         type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
@@ -230,19 +234,17 @@ class GarminClient:
                             is_act_cycling = "cycl" in type_key or "ride" in type_key or "bike" in type_key
                             if is_target_pedestrian and is_act_cycling:
                                 logger.info(
-                                    "Ignoring Garmin activity '%s' (%s) at %s because it is cycling while target is %s.",
+                                    "Ignoring Garmin activity '%s' (%s) because it is cycling while target is %s.",
                                     existing_title,
                                     type_key,
-                                    format_local_datetime(act_dt),
                                     norm_target,
                                 )
                                 continue
 
                         logger.warning(
-                            "Found potential duplicate activity on Garmin: '%s' (%s) at %s (diff: %.1f hrs)",
+                            "Found potential duplicate activity on Garmin: '%s' (%s) (diff: %.1f hrs)",
                             existing_title,
                             type_key or "unknown",
-                            format_local_datetime(act_dt),
                             hours_diff,
                         )
                         return True
@@ -256,19 +258,71 @@ class GarminClient:
                     logger.warning("Garmin Connect rate limit (HTTP 429) during duplicate check. Retrying in %ds...", wait_sec)
                     time.sleep(wait_sec)
                     continue
+
                 logger.warning("Error querying Garmin Connect activities for duplicate check: %s. Continuing.", exc)
                 return False
 
-    def set_activity_name(self, activity_id: str, title: str) -> bool:
-        """Update an activity title in Garmin Connect."""
+    def update_activity(
+        self,
+        activity_id: str,
+        name: Optional[str] = None,
+        type_key: Optional[str] = None,
+        type_id: Optional[int] = None,
+        parent_type_id: Optional[int] = None,
+    ) -> bool:
+        """Update an activity title and/or sport category in Garmin Connect atomically."""
         self.ensure_authenticated()
         try:
-            self._client.set_activity_name(str(activity_id), title)
-            logger.info("Successfully updated Garmin activity %s title to '%s'", activity_id, title)
+            url = f"{self._client.garmin_connect_activity}/{activity_id}"
+            try:
+                act_num = int(activity_id)
+            except (ValueError, TypeError):
+                act_num = activity_id
+
+            payload: Dict[str, Any] = {"activityId": act_num}
+            if name:
+                payload["activityName"] = str(name)
+
+            if type_key:
+                if type_id is None or parent_type_id is None:
+                    info = self._get_activity_type_info(type_key)
+                    if info:
+                        type_id = info.get("typeId")
+                        type_key = info.get("typeKey", type_key)
+                        parent_type_id = info.get("parentTypeId")
+
+                if type_id is None:
+                    fallbacks = {
+                        "walking": (9, 17),
+                        "indoor_walking": (9, 17),
+                        "running": (1, 17),
+                        "treadmill_running": (18, 1),
+                    }
+                    fb = fallbacks.get(type_key.lower(), (9, 17))
+                    type_id = fb[0]
+                    parent_type_id = parent_type_id or fb[1]
+
+                payload["activityTypeDTO"] = {
+                    "typeId": type_id,
+                    "typeKey": type_key,
+                    "parentTypeId": parent_type_id or 17,
+                }
+
+            self._client.client.put("connectapi", url, json=payload, api=True)
+            logger.info(
+                "Successfully updated Garmin activity %s (name: '%s', type: '%s')",
+                activity_id,
+                name or "(unchanged)",
+                type_key or "(unchanged)",
+            )
             return True
         except Exception as exc:
-            logger.warning("Failed to update Garmin activity %s title to '%s': %s", activity_id, title, exc)
+            logger.warning("Failed to update Garmin activity %s: %s", activity_id, exc)
             return False
+
+    def set_activity_name(self, activity_id: str, title: str) -> bool:
+        """Update an activity title in Garmin Connect."""
+        return self.update_activity(activity_id=str(activity_id), name=title)
 
     def _get_activity_type_info(self, desired_key: str) -> Optional[Dict[str, Any]]:
         """Fetch activity type metadata from Garmin Connect."""
@@ -297,47 +351,12 @@ class GarminClient:
         parent_type_id: Optional[int] = None,
     ) -> bool:
         """Update an activity category/type in Garmin Connect."""
-        self.ensure_authenticated()
-        try:
-            if type_id is None or parent_type_id is None:
-                info = self._get_activity_type_info(type_key)
-                if info:
-                    type_id = info.get("typeId")
-                    type_key = info.get("typeKey", type_key)
-                    parent_type_id = info.get("parentTypeId")
-
-            if type_id is None:
-                fallbacks = {
-                    "walking": (9, 17),
-                    "indoor_walking": (9, 17),
-                    "running": (1, 17),
-                    "treadmill_running": (18, 1),
-                }
-                fb = fallbacks.get(type_key.lower(), (9, 17))
-                type_id = fb[0]
-                parent_type_id = parent_type_id or fb[1]
-
-            self._client.set_activity_type(
-                activity_id=str(activity_id),
-                type_id=type_id,
-                type_key=type_key,
-                parent_type_id=parent_type_id or 17,
-            )
-            logger.info(
-                "Successfully updated Garmin activity %s type to '%s' (typeId: %s)",
-                activity_id,
-                type_key,
-                type_id,
-            )
-            return True
-        except Exception as exc:
-            logger.warning(
-                "Failed to update Garmin activity %s type to '%s': %s",
-                activity_id,
-                type_key,
-                exc,
-            )
-            return False
+        return self.update_activity(
+            activity_id=str(activity_id),
+            type_key=type_key,
+            type_id=type_id,
+            parent_type_id=parent_type_id,
+        )
 
     def _try_rename_uploaded_activity(
         self,
@@ -352,20 +371,24 @@ class GarminClient:
         if not target_dt:
             return False
 
-        date_key = target_dt.strftime("%Y-%m-%d")
+        start_date = (target_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        end_date = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
         for attempt in range(1, retries + 1):
             if delay_sec > 0:
                 time.sleep(delay_sec)
             try:
-                activities = self._client.get_activities_by_date(date_key, date_key) or []
+                activities = self._client.get_activities_by_date(start_date, end_date) or []
                 for act in activities:
-                    start_str = act.get("startTimeLocal") or act.get("startTimeGMT") or act.get("startTime")
-                    act_dt = parse_activity_datetime(start_str)
-                    if not act_dt:
-                        continue
+                    start_gmt = act.get("startTimeGMT")
+                    start_local = act.get("startTimeLocal") or act.get("startTime")
+                    dt_gmt = parse_activity_datetime(start_gmt)
+                    dt_local = parse_activity_datetime(start_local)
 
-                    hours_diff = abs((act_dt - target_dt).total_seconds()) / 3600.0
+                    diff_gmt = abs((dt_gmt - target_dt).total_seconds()) / 3600.0 if dt_gmt else 999.0
+                    diff_local = abs((dt_local - target_dt).total_seconds()) / 3600.0 if dt_local else 999.0
+                    hours_diff = min(diff_gmt, diff_local)
+
                     if hours_diff <= 1.0:
                         type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
                         if target_sport:
@@ -377,38 +400,37 @@ class GarminClient:
                         if not act_id:
                             continue
 
-                        # 1. Correct activity sport/type if it doesn't match target_sport
+                        current_title = act.get("activityName")
+                        needs_name_update = bool(desired_title and current_title != desired_title)
+                        needs_type_update = False
+                        desired_type_key = None
+
                         if target_sport:
                             norm_target = str(target_sport).upper()
                             if norm_target == "WALKING" and "walk" not in type_key:
-                                logger.info(
-                                    "Garmin activity %s is currently categorized as '%s'; correcting type to 'walking'...",
-                                    act_id,
-                                    type_key,
-                                )
-                                self.set_activity_type(str(act_id), type_key="walking")
+                                needs_type_update = True
+                                desired_type_key = "walking"
                             elif norm_target == "RUNNING" and "run" not in type_key:
-                                logger.info(
-                                    "Garmin activity %s is currently categorized as '%s'; correcting type to 'running'...",
-                                    act_id,
-                                    type_key,
-                                )
-                                self.set_activity_type(str(act_id), type_key="running")
+                                needs_type_update = True
+                                desired_type_key = "running"
 
-                        # 2. Correct activity name if it doesn't match desired_title
-                        current_title = act.get("activityName")
-                        if desired_title and current_title != desired_title:
+                        if needs_name_update or needs_type_update:
                             logger.info(
-                                "Renaming Garmin activity %s to '%s' (current: '%s')...",
+                                "Updating Garmin activity %s: title='%s' (was '%s'), type='%s' (was '%s')...",
                                 act_id,
                                 desired_title,
                                 current_title,
+                                desired_type_key or type_key,
+                                type_key,
                             )
-                            self.set_activity_name(str(act_id), desired_title)
-
+                            self.update_activity(
+                                activity_id=str(act_id),
+                                name=desired_title if needs_name_update else current_title,
+                                type_key=desired_type_key,
+                            )
                         return True
             except Exception as exc:
-                logger.debug("Rename/update attempt %d for %s failed: %s", attempt, date_key, exc)
+                logger.debug("Rename/update attempt %d for %s-%s failed: %s", attempt, start_date, end_date, exc)
 
         return False
 

@@ -164,7 +164,16 @@ class SyncEngine:
 
             # Check 1: Already handled in local database
             if self.store.is_synced(act_id):
-                logger.info("Activity %s already marked in sync database. Skipping.", act_id)
+                # Ensure previously uploaded activities have the desired title and sport category on Garmin Connect
+                if self.config.check_duplicates:
+                    self.garmin._try_rename_uploaded_activity(
+                        activity_date_str=act_date,
+                        desired_title=name,
+                        target_sport=sport,
+                        retries=1,
+                        delay_sec=0,
+                    )
+                logger.info("Activity %s already marked in sync database. Skipping upload.", act_id)
                 stats["already_synced"] += 1
                 if sync_latest:
                     break

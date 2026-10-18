@@ -13,7 +13,7 @@ from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.record_message import RecordMessage
 from fit_tool.profile.messages.session_message import SessionMessage
 from fit_tool.profile.messages.sport_message import SportMessage
-from fit_tool.profile.profile_type import Manufacturer, Sport, SubSport
+from fit_tool.profile.profile_type import Activity, Manufacturer, Sport, SubSport
 
 from src.fit_builder import FitBuilder, parse_timestamp_ms
 
@@ -100,6 +100,7 @@ class TestFitBuilder(unittest.TestCase):
                     found_activity = True
                     self.assertIsNotNone(msg.timestamp)
                     self.assertEqual(msg.num_sessions, 1)
+                    self.assertIn(msg.type, (Activity.MANUAL, Activity.MANUAL.value))
 
             self.assertTrue(found_file_id)
             self.assertTrue(found_sport)

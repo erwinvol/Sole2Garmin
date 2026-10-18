@@ -137,7 +137,7 @@ class SyncEngine:
             if current_sport in ("RUNNING", "WALKING"):
                 if self.config.walk_run_threshold_kmh > 0 and avg_kmh <= self.config.walk_run_threshold_kmh:
                     activity["sport"] = "WALKING"
-                    activity["sub_sport"] = "INDOOR_WALKING"
+                    activity["sub_sport"] = "GENERIC"
                     activity["name"] = "Sole Treadmill Indoor Walking"
                 else:
                     activity["sport"] = "RUNNING"

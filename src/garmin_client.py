@@ -96,6 +96,7 @@ class GarminClient:
         self.token_dir = token_dir or Path.home() / ".garminconnect"
         self._client: Optional[Any] = None
         self._authenticated = False
+        self._activity_types_cache: Optional[List[Dict[str, Any]]] = None
 
     def authenticate(self) -> bool:
         """Authenticate with Garmin Connect using cached tokens or user credentials."""
@@ -269,6 +270,75 @@ class GarminClient:
             logger.warning("Failed to update Garmin activity %s title to '%s': %s", activity_id, title, exc)
             return False
 
+    def _get_activity_type_info(self, desired_key: str) -> Optional[Dict[str, Any]]:
+        """Fetch activity type metadata from Garmin Connect."""
+        if self._activity_types_cache is None:
+            try:
+                types = self._client.get_activity_types()
+                if isinstance(types, list):
+                    self._activity_types_cache = types
+                else:
+                    self._activity_types_cache = []
+            except Exception as e:
+                logger.debug("Could not fetch activity types list from Garmin: %s", e)
+                self._activity_types_cache = []
+
+        desired_lower = desired_key.lower()
+        for t in (self._activity_types_cache or []):
+            if str(t.get("typeKey", "")).lower() == desired_lower:
+                return t
+        return None
+
+    def set_activity_type(
+        self,
+        activity_id: str,
+        type_key: str = "walking",
+        type_id: Optional[int] = None,
+        parent_type_id: Optional[int] = None,
+    ) -> bool:
+        """Update an activity category/type in Garmin Connect."""
+        self.ensure_authenticated()
+        try:
+            if type_id is None or parent_type_id is None:
+                info = self._get_activity_type_info(type_key)
+                if info:
+                    type_id = info.get("typeId")
+                    type_key = info.get("typeKey", type_key)
+                    parent_type_id = info.get("parentTypeId")
+
+            if type_id is None:
+                fallbacks = {
+                    "walking": (9, 17),
+                    "indoor_walking": (9, 17),
+                    "running": (1, 17),
+                    "treadmill_running": (18, 1),
+                }
+                fb = fallbacks.get(type_key.lower(), (9, 17))
+                type_id = fb[0]
+                parent_type_id = parent_type_id or fb[1]
+
+            self._client.set_activity_type(
+                activity_id=str(activity_id),
+                type_id=type_id,
+                type_key=type_key,
+                parent_type_id=parent_type_id or 17,
+            )
+            logger.info(
+                "Successfully updated Garmin activity %s type to '%s' (typeId: %s)",
+                activity_id,
+                type_key,
+                type_id,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to update Garmin activity %s type to '%s': %s",
+                activity_id,
+                type_key,
+                exc,
+            )
+            return False
+
     def _try_rename_uploaded_activity(
         self,
         activity_date_str: str,
@@ -277,7 +347,7 @@ class GarminClient:
         retries: int = 3,
         delay_sec: int = 4,
     ) -> bool:
-        """Find the uploaded activity on Garmin Connect matching activity_date_str and rename it."""
+        """Find the uploaded activity on Garmin Connect matching activity_date_str and update its title and type."""
         target_dt = parse_activity_datetime(activity_date_str)
         if not target_dt:
             return False
@@ -296,7 +366,7 @@ class GarminClient:
                         continue
 
                     hours_diff = abs((act_dt - target_dt).total_seconds()) / 3600.0
-                    if hours_diff <= 0.5:
+                    if hours_diff <= 1.0:
                         type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
                         if target_sport:
                             norm_target = str(target_sport).upper()
@@ -304,19 +374,41 @@ class GarminClient:
                                 continue
 
                         act_id = act.get("activityId")
+                        if not act_id:
+                            continue
+
+                        # 1. Correct activity sport/type if it doesn't match target_sport
+                        if target_sport:
+                            norm_target = str(target_sport).upper()
+                            if norm_target == "WALKING" and "walk" not in type_key:
+                                logger.info(
+                                    "Garmin activity %s is currently categorized as '%s'; correcting type to 'walking'...",
+                                    act_id,
+                                    type_key,
+                                )
+                                self.set_activity_type(str(act_id), type_key="walking")
+                            elif norm_target == "RUNNING" and "run" not in type_key:
+                                logger.info(
+                                    "Garmin activity %s is currently categorized as '%s'; correcting type to 'running'...",
+                                    act_id,
+                                    type_key,
+                                )
+                                self.set_activity_type(str(act_id), type_key="running")
+
+                        # 2. Correct activity name if it doesn't match desired_title
                         current_title = act.get("activityName")
-                        if act_id and current_title != desired_title:
+                        if desired_title and current_title != desired_title:
                             logger.info(
                                 "Renaming Garmin activity %s to '%s' (current: '%s')...",
                                 act_id,
                                 desired_title,
                                 current_title,
                             )
-                            return self.set_activity_name(str(act_id), desired_title)
-                        elif act_id:
-                            return True
+                            self.set_activity_name(str(act_id), desired_title)
+
+                        return True
             except Exception as exc:
-                logger.debug("Rename attempt %d for %s failed: %s", attempt, date_key, exc)
+                logger.debug("Rename/update attempt %d for %s failed: %s", attempt, date_key, exc)
 
         return False
 

@@ -64,7 +64,7 @@ class FitBuilder:
         from fit_tool.profile.messages.session_message import SessionMessage
         from fit_tool.profile.messages.activity_message import ActivityMessage
         from fit_tool.profile.profile_type import (
-            ActivityType,
+            Activity,
             Event,
             EventType,
             FileType,
@@ -110,22 +110,19 @@ class FitBuilder:
             fit_sport = Sport.CYCLING
             fit_sub_sport = SubSport.INDOOR_CYCLING
             sport_name = "Indoor Cycling"
-            act_type = ActivityType.CYCLING
         elif sport_str == "FITNESS_EQUIPMENT":
             fit_sport = Sport.FITNESS_EQUIPMENT
             fit_sub_sport = SubSport.ELLIPTICAL
             sport_name = "Elliptical"
-            act_type = ActivityType.FITNESS_EQUIPMENT
         elif sport_str == "WALKING":
             fit_sport = Sport.WALKING
             if sub_sport_str in ("INDOOR_WALKING", "INDOOR"):
-                fit_sub_sport = SubSport.INDOOR_WALKING
+                fit_sub_sport = SubSport.GENERIC
             elif sub_sport_str == "GENERIC":
                 fit_sub_sport = SubSport.GENERIC
             else:
-                fit_sub_sport = SubSport.INDOOR_WALKING
+                fit_sub_sport = SubSport.GENERIC
             sport_name = activity.get("name") or "Sole Treadmill Indoor Walking"
-            act_type = ActivityType.WALKING
         else:  # RUNNING
             fit_sport = Sport.RUNNING
             if sub_sport_str == "TREADMILL":
@@ -135,7 +132,6 @@ class FitBuilder:
             else:
                 fit_sub_sport = SubSport.INDOOR_RUNNING
             sport_name = activity.get("name") or "Sole Treadmill Indoor Run"
-            act_type = ActivityType.RUNNING
 
         builder = FitFileBuilder(auto_define=True)
 
@@ -279,10 +275,9 @@ class FitBuilder:
         act_msg.timestamp = end_time_ms
         act_msg.total_timer_time = duration_s
         act_msg.num_sessions = 1
-        act_msg.type = act_type
+        act_msg.type = Activity.MANUAL
         act_msg.event = Event.ACTIVITY
         act_msg.event_type = EventType.STOP
-        act_msg.name = sport_name
         builder.add(act_msg)
 
         fit_file = builder.build()

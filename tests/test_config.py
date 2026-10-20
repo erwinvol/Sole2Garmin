@@ -22,6 +22,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.default_sub_sport, "TREADMILL")
         self.assertEqual(config.walk_run_threshold_kmh, 6.0)
         self.assertEqual(config.ingestion_provider, "cloud")
+        self.assertEqual(config.timezone, "America/New_York")
 
     @patch.dict(os.environ, {
         "SOLE_EMAIL": "runner@example.com",
@@ -34,6 +35,7 @@ class TestConfig(unittest.TestCase):
         "DEFAULT_SPORT": "CYCLING",
         "DEFAULT_SUB_SPORT": "INDOOR_CYCLING",
         "WALK_RUN_THRESHOLD_KMH": "5.5",
+        "TIMEZONE": "America/Chicago",
     })
     def test_from_env(self):
         config = Config.from_env()
@@ -48,6 +50,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.default_sub_sport, "INDOOR_CYCLING")
         self.assertEqual(config.walk_run_threshold_kmh, 5.5)
         self.assertEqual(config.ingestion_provider, "cloud")
+        self.assertEqual(config.timezone, "America/Chicago")
 
     @patch.dict(os.environ, {
         "INGESTION_PROVIDER": "strava",

@@ -62,6 +62,9 @@ class Config:
     # Default is 6.0 km/h. Set to 0 to disable auto-threshold tagging.
     walk_run_threshold_kmh: float = 6.0
 
+    # Timezone for local wall-clock interpretation and Garmin FIT local_timestamp
+    timezone: str = "America/New_York"
+
     # Local sample / drop directory for offline / manual exports
     sample_dir: Path = Path("data/sample_activities")
 
@@ -116,6 +119,7 @@ class Config:
             default_sport=os.getenv("DEFAULT_SPORT", "RUNNING").upper(),
             default_sub_sport=os.getenv("DEFAULT_SUB_SPORT", "TREADMILL").upper(),
             walk_run_threshold_kmh=float(_clean_env("WALK_RUN_THRESHOLD_KMH", _clean_env("WALKING_SPEED_THRESHOLD_KMH", "6.0")) or 6.0),
+            timezone=_clean_env("TIMEZONE", _clean_env("TZ", "America/New_York")),
             sample_dir=sample_dir,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )

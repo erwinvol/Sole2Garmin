@@ -11,11 +11,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def parse_timestamp_ms(date_val: Any) -> int:
+def parse_timestamp_ms(date_val: Any, tz: Optional[Any] = None) -> int:
     """Parse various timestamp representations into unix milliseconds."""
     from src.garmin_client import parse_activity_datetime
 
-    dt = parse_activity_datetime(date_val)
+    dt = parse_activity_datetime(date_val, user_tz=tz)
     if dt:
         return int(dt.timestamp() * 1000)
     return int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -29,10 +29,12 @@ class FitBuilder:
         spoof_device: bool = True,
         device_product_id: int = 3943,  # Garmin Epix Gen 2 (or 4315 Forerunner 965)
         software_version: float = 18.16,
+        user_timezone: Optional[str] = None,
     ):
         self.spoof_device = spoof_device
         self.device_product_id = device_product_id
         self.software_version = software_version
+        self.user_timezone = user_timezone
 
     def build_fit_from_activity(
         self,
@@ -80,7 +82,7 @@ class FitBuilder:
             tempfile.gettempdir(), f"sole_{activity['id']}.fit"
         )
 
-        start_time_ms = parse_timestamp_ms(activity.get("date", ""))
+        start_time_ms = parse_timestamp_ms(activity.get("date", ""), tz=self.user_timezone)
         duration_s = max(float(activity.get("duration_seconds", 0.0)), 10.0)
         end_time_ms = start_time_ms + int(duration_s * 1000)
         distance_m = max(float(activity.get("distance_meters", 0.0)), 10.0)
@@ -173,7 +175,7 @@ class FitBuilder:
             # Use real data points
             for pt in data_points:
                 rec = RecordMessage()
-                rec.timestamp = parse_timestamp_ms(pt.get("timestamp", "")) or start_time_ms
+                rec.timestamp = parse_timestamp_ms(pt.get("timestamp", ""), tz=self.user_timezone) or start_time_ms
                 if "distance" in pt and pt["distance"] is not None:
                     rec.distance = float(pt["distance"])
                 if "speed" in pt and pt["speed"] is not None:
@@ -271,6 +273,19 @@ class FitBuilder:
         builder.add(sess)
 
         # 9. Activity
+        # In Garmin Connect, indoor activities without GPS rely on ActivityMessage.local_timestamp
+        # to determine the local timezone offset: tz_offset = local_timestamp - timestamp.
+        # FIT epoch: 1989-12-31 00:00:00 UTC = 631065600 seconds unix epoch.
+        from src.garmin_client import get_configured_timezone
+
+        FIT_EPOCH_S = 631065600
+        target_tz = get_configured_timezone(self.user_timezone)
+        end_dt_utc = datetime.fromtimestamp(end_time_ms / 1000.0, tz=timezone.utc)
+        end_dt_local = end_dt_utc.astimezone(target_tz)
+        offset_s = int(end_dt_local.utcoffset().total_seconds())
+        utc_fit_s = int(end_time_ms / 1000.0) - FIT_EPOCH_S
+        local_fit_s = utc_fit_s + offset_s
+
         act_msg = ActivityMessage()
         act_msg.timestamp = end_time_ms
         act_msg.total_timer_time = duration_s
@@ -278,6 +293,7 @@ class FitBuilder:
         act_msg.type = Activity.MANUAL
         act_msg.event = Event.ACTIVITY
         act_msg.event_type = EventType.STOP
+        act_msg.local_timestamp = local_fit_s
         builder.add(act_msg)
 
         fit_file = builder.build()
@@ -306,6 +322,7 @@ class FitBuilder:
         from fit_tool.profile.messages.file_id_message import FileIdMessage
         from fit_tool.profile.messages.device_info_message import DeviceInfoMessage
         from fit_tool.profile.messages.sport_message import SportMessage
+        from fit_tool.profile.messages.activity_message import ActivityMessage
         from fit_tool.profile.profile_type import FileType, Manufacturer, Sport, SubSport
 
         dest_path = output_path or os.path.join(
@@ -331,6 +348,16 @@ class FitBuilder:
                 if msg.sport is None:
                     msg.sport = Sport.RUNNING
                     msg.sub_sport = SubSport.TREADMILL
+            elif isinstance(msg, ActivityMessage):
+                if getattr(msg, "local_timestamp", None) is None and getattr(msg, "timestamp", None):
+                    from src.garmin_client import get_configured_timezone
+                    target_tz = get_configured_timezone(self.user_timezone)
+                    end_ms = msg.timestamp
+                    end_dt_utc = datetime.fromtimestamp(end_ms / 1000.0, tz=timezone.utc)
+                    end_dt_local = end_dt_utc.astimezone(target_tz)
+                    offset_s = int(end_dt_local.utcoffset().total_seconds())
+                    utc_fit_s = int(end_ms / 1000.0) - 631065600
+                    msg.local_timestamp = utc_fit_s + offset_s
 
         with open(dest_path, "wb") as f:
             f.write(fit_file.to_bytes())

@@ -1,21 +1,21 @@
-"""Sync engine orchestrator for Sole2Garmin service."""
+"""Synchronization engine orchestrating ingestion from providers and export to Garmin Connect."""
 
 import logging
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.config import Config
 from src.fit_builder import FitBuilder
 from src.garmin_client import GarminClient, format_local_datetime, parse_activity_datetime
-from src.sole_client import SoleClient
-from src.strava_client import StravaClient
 from src.sync_store import SyncStore
 
 logger = logging.getLogger(__name__)
 
 
 class SyncEngine:
-    """Coordinates fetching from Sole/Strava, FIT generation/patching, and uploading to Garmin Connect."""
+    """Manages activity detection, deduplication, conversion, and upload workflow."""
 
     def __init__(
         self,
@@ -28,20 +28,15 @@ class SyncEngine:
     ):
         self.config = config
 
-        # Determine active ingestion client
-        active_source = source or sole
-        if active_source is None:
-            if config.ingestion_provider == "cloud":
-                active_source = SoleClient(
-                    email=config.sole_email,
-                    password=config.sole_password,
-                    base_url=config.sole_base_url,
-                    token_dir=config.sole_token_dir,
-                    sample_dir=config.sample_dir,
-                    walk_run_threshold_kmh=config.walk_run_threshold_kmh,
-                )
-            else:
-                active_source = StravaClient(
+        # Determine activity source provider based on config
+        self.source = source or sole
+        if self.source is None:
+            provider = self.config.ingestion_provider
+            logger.info("Initializing activity ingestion provider: '%s'", provider)
+
+            if provider == "strava":
+                from src.strava_client import StravaClient
+                self.source = StravaClient(
                     client_id=config.strava_client_id,
                     client_secret=config.strava_client_secret,
                     refresh_token=config.strava_refresh_token,
@@ -50,19 +45,31 @@ class SyncEngine:
                     sample_dir=config.sample_dir,
                     walk_run_threshold_kmh=config.walk_run_threshold_kmh,
                 )
+            else:
+                # Default: SOLE+ / Dyaco Cloud API
+                from src.sole_client import SoleClient
+                self.source = SoleClient(
+                    email=config.sole_email,
+                    password=config.sole_password,
+                    base_url=config.sole_base_url,
+                    token_dir=config.sole_token_dir,
+                    sample_dir=config.sample_dir,
+                    walk_run_threshold_kmh=config.walk_run_threshold_kmh,
+                )
 
-        self.source = active_source
         self.sole = self.source  # Backward compatibility alias
 
         self.garmin = garmin or GarminClient(
             username=config.garmin_username,
             password=config.garmin_password,
             token_dir=config.garmin_token_dir,
+            user_timezone=config.timezone,
         )
         self.builder = builder or FitBuilder(
             spoof_device=config.spoof_garmin_device,
             device_product_id=config.device_product_id,
             software_version=config.device_software_version,
+            user_timezone=config.timezone,
         )
         db_path = config.data_dir / "sync_state.db"
         self.store = store or SyncStore(db_path=db_path)
@@ -84,63 +91,55 @@ class SyncEngine:
             Dictionary with counts of processed, uploaded, skipped, and failed activities.
         """
         batch_limit = 1 if sync_latest else (limit or self.config.sync_batch_size)
-        logger.info(
-            "Starting sync run [Provider: %s] (batch limit: %d, sync_latest: %s, dry_run: %s)...",
-            self.config.ingestion_provider.upper(),
-            batch_limit,
-            sync_latest,
-            dry_run,
-        )
-
         stats = {
             "total_found": 0,
-            "already_synced": 0,
             "uploaded": 0,
             "skipped_duplicate": 0,
+            "already_synced": 0,
             "failed": 0,
         }
 
-        # Step 1: Fetch activities from active provider
-        try:
-            query_limit = 5 if sync_latest else batch_limit
-            activities = self.source.get_activities(limit=query_limit)
-        except Exception as exc:
-            logger.exception("Failed to retrieve activities from %s: %s", self.config.ingestion_provider, exc)
-            stats["failed"] += 1
-            return stats
+        # Step 0: Ensure historical / already synced activities have the desired name & sport in Garmin Connect
+        if self.config.check_duplicates and not dry_run:
+            self.sync_previously_synced_activities()
 
-        activities.sort(
-            key=lambda a: parse_activity_datetime(a.get("date")) or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
+        logger.info(
+            "Starting synchronization cycle (Provider: %s, Batch limit: %d, Dry run: %s)...",
+            self.config.ingestion_provider,
+            batch_limit,
+            dry_run,
         )
 
-        if sync_latest:
-            activities = activities[:1]
-        elif batch_limit and len(activities) > batch_limit:
-            activities = activities[:batch_limit]
+        try:
+            activities = self.source.get_activities(limit=batch_limit)
+        except Exception as exc:
+            logger.exception("Failed to retrieve activities from %s: %s", self.config.ingestion_provider, exc)
+            return stats
 
         stats["total_found"] = len(activities)
         if not activities:
-            logger.info("No new activities returned from %s provider.", self.config.ingestion_provider)
-            if not dry_run and not sync_latest:
-                try:
-                    self.sync_previously_synced_activities(limit=self.config.sync_batch_size * 2)
-                except Exception as exc:
-                    logger.warning("Error verifying previously synced activities: %s", exc)
+            logger.info("No activities returned from %s provider.", self.config.ingestion_provider)
             return stats
 
-        activities_to_process = activities if sync_latest else list(reversed(activities))
+        # Sort chronological (oldest first) to sync in logical order
+        sorted_activities = sorted(
+            activities,
+            key=lambda a: parse_activity_datetime(a.get("date")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
 
-        for activity in activities_to_process:
-            # Auto Walk vs Run threshold tagging
-            avg_mps = float(activity.get("avg_speed_mps") or 0.0)
-            if avg_mps <= 0 and activity.get("duration_seconds", 0) > 0:
-                avg_mps = float(activity.get("distance_meters", 0.0)) / float(activity["duration_seconds"])
+        for activity in sorted_activities:
+            # Auto-reclassify sport and name based on speed threshold
+            avg_mps = activity.get("avg_speed_mps")
+            if avg_mps is None:
+                dist_m = float(activity.get("distance_meters") or 0.0)
+                dur_s = float(activity.get("duration_seconds") or 0.0)
+                avg_mps = (dist_m / dur_s) if dur_s > 0 else 0.0
             avg_kmh = avg_mps * 3.6
 
+            # Only auto-tag if sport is pedestrian (walking/running)
             current_sport = str(activity.get("sport", "RUNNING")).upper()
-            if current_sport in ("RUNNING", "WALKING"):
-                if self.config.walk_run_threshold_kmh > 0 and avg_kmh <= self.config.walk_run_threshold_kmh:
+            if current_sport in ("WALKING", "RUNNING") and self.config.walk_run_threshold_kmh > 0:
+                if avg_kmh <= self.config.walk_run_threshold_kmh:
                     activity["sport"] = "WALKING"
                     activity["sub_sport"] = "GENERIC"
                     activity["name"] = "Sole Treadmill Indoor Walking"
@@ -160,7 +159,7 @@ class SyncEngine:
                 "Evaluating Sole activity: %s (ID: %s, Date: %s, Sport: %s/%s, Speed: %.1f km/h [Threshold: %.1f km/h])",
                 name,
                 act_id,
-                format_local_datetime(act_date),
+                format_local_datetime(act_date, user_tz=self.config.timezone),
                 sport,
                 sub_sport,
                 avg_kmh,
@@ -179,168 +178,138 @@ class SyncEngine:
                         delay_sec=0,
                         threshold_hours=self.config.duplicate_threshold_hours,
                     )
-                logger.info("Activity %s already marked in sync database. Skipping upload.", act_id)
+                logger.info("Activity %s already synced in local database. Skipping.", act_id)
                 stats["already_synced"] += 1
-                if sync_latest:
-                    break
                 continue
 
-            if dry_run:
-                logger.info("[DRY-RUN] Would process activity %s: %s", act_id, name)
-                stats["uploaded"] += 1
-                if sync_latest:
-                    break
-                continue
-
-            generated_path = None
-            try:
-                # Check 2: Duplicate check on Garmin Connect
-                if self.config.check_duplicates:
-                    if self.garmin.check_duplicate(
+            # Check 2: Duplicate check against Garmin Connect API
+            if self.config.check_duplicates:
+                try:
+                    logger.info(
+                        "Checking Garmin Connect for duplicate activities on %s (±%dh window)...",
+                        format_local_datetime(act_date, include_time=False, user_tz=self.config.timezone),
+                        self.config.duplicate_threshold_hours,
+                    )
+                    is_dup = self.garmin.check_duplicate(
                         activity_date_str=act_date,
                         activity_name=name,
                         target_sport=sport,
                         threshold_hours=self.config.duplicate_threshold_hours,
-                    ):
-                        logger.warning("Activity %s already present on Garmin Connect. Marking skipped.", act_id)
-                        # Ensure existing duplicate activity has desired title
-                        self.garmin._try_rename_uploaded_activity(
-                            activity_date_str=act_date,
-                            desired_title=name,
-                            target_sport=sport,
-                            retries=1,
-                            delay_sec=0,
-                            threshold_hours=self.config.duplicate_threshold_hours,
+                    )
+                    if is_dup:
+                        logger.warning(
+                            "Activity %s already present on Garmin Connect. Marking skipped.",
+                            act_id,
                         )
-                        self.store.record_activity(
-                            sole_id=act_id,
-                            name=name,
-                            activity_date=act_date,
-                            sport=sport,
-                            status="SKIPPED_DUPLICATE",
-                            notes="Detected matching activity on Garmin Connect",
-                        )
+                        if not dry_run:
+                            self.store.record_synced(
+                                act_id,
+                                status="SKIPPED_DUPLICATE",
+                                name=name,
+                                sport=sport,
+                                activity_date=act_date,
+                                notes="Duplicate detected on Garmin Connect",
+                            )
+                            # Ensure the existing activity has the expected title and sport category
+                            self.garmin._try_rename_uploaded_activity(
+                                activity_date_str=act_date,
+                                desired_title=name,
+                                target_sport=sport,
+                                retries=1,
+                                delay_sec=0,
+                                threshold_hours=self.config.duplicate_threshold_hours,
+                            )
                         stats["skipped_duplicate"] += 1
                         continue
+                except Exception as exc:
+                    logger.warning("Duplicate check failed (%s); proceeding with upload attempt.", exc)
 
-                # Build or enhance FIT file
-                generated_path = self.builder.build_fit_from_activity(activity)
+            if dry_run:
+                logger.info("[DRY RUN] Would synthesize and upload FIT file for %s (%s)", act_id, name)
+                stats["uploaded"] += 1
+                continue
+
+            # Build spoofed FIT file
+            fit_file: Optional[str] = None
+            try:
+                fit_file = self.builder.build_fit_from_activity(activity)
 
                 # Upload to Garmin Connect
-                upload_res = self.garmin.upload_activity(
-                    generated_path,
-                    activity_name=name,
+                resp = self.garmin.upload_activity(fit_file)
+                logger.info("Upload response: %s", resp)
+
+                # Verify & rename/re-type activity on Garmin Connect if needed
+                self.garmin._try_rename_uploaded_activity(
                     activity_date_str=act_date,
+                    desired_title=name,
                     target_sport=sport,
+                    retries=3,
+                    delay_sec=4,
+                    threshold_hours=self.config.duplicate_threshold_hours,
                 )
-                status_code = upload_res.get("status")
 
-                if status_code == "skipped_duplicate":
-                    self.store.record_activity(
-                        sole_id=act_id,
-                        name=name,
-                        activity_date=act_date,
-                        sport=sport,
-                        status="SKIPPED_DUPLICATE",
-                        notes="Garmin returned HTTP 409 Conflict",
-                    )
-                    stats["skipped_duplicate"] += 1
-                else:
-                    self.store.record_activity(
-                        sole_id=act_id,
-                        name=name,
-                        activity_date=act_date,
-                        sport=sport,
-                        status="UPLOADED",
-                        notes=f"Device: Epix Gen 2 (Product {self.config.device_product_id})",
-                    )
-                    stats["uploaded"] += 1
-
+                # Persist success in database
+                self.store.record_synced(
+                    act_id,
+                    status="UPLOADED",
+                    name=name,
+                    sport=sport,
+                    activity_date=act_date,
+                    notes=f"Uploaded to Garmin Connect (Device ID: {self.config.device_product_id})",
+                )
+                stats["uploaded"] += 1
                 logger.info("Successfully handled activity %s: %s", act_id, name)
 
             except Exception as exc:
-                logger.exception("Error processing activity %s: %s", act_id, exc)
+                logger.exception("Failed to process activity %s (%s): %s", act_id, name, exc)
+                self.store.record_failed(act_id, error_msg=str(exc))
                 stats["failed"] += 1
 
             finally:
-                if generated_path:
-                    raw_orig = activity.get("raw_fit_path")
-                    if not raw_orig or generated_path != raw_orig:
-                        self.builder.cleanup_file(generated_path)
+                if fit_file and os.path.exists(fit_file):
+                    FitBuilder.cleanup_file(fit_file)
 
-            if sync_latest:
-                break
-
-        logger.info("==================================================")
+        logger.info("--------------------------------------------------")
         logger.info(
-            "Sync run finished. Total: %d, Already Synced: %d, Uploaded: %d, Skipped Duplicates: %d, Failed: %d",
+            "Sync cycle finished. Found: %d | Uploaded: %d | Skipped (Dup): %d | Already Synced: %d | Failed: %d",
             stats["total_found"],
-            stats["already_synced"],
             stats["uploaded"],
             stats["skipped_duplicate"],
+            stats["already_synced"],
             stats["failed"],
         )
-
-        if not dry_run and not sync_latest:
-            try:
-                self.sync_previously_synced_activities(limit=self.config.sync_batch_size * 2)
-            except Exception as exc:
-                logger.warning("Error verifying previously synced activities: %s", exc)
-
         return stats
 
-    def sync_previously_synced_activities(self, limit: int = 20) -> int:
-        """Retroactively update titles and sport categories on Garmin Connect for previously synced activities.
-
-        Returns:
-            Count of activities verified/updated.
-        """
-        if not self.config.check_duplicates:
-            return 0
-
-        synced_records = self.store.get_all_synced(limit=limit)
+    def sync_previously_synced_activities(self) -> int:
+        """Scan previously synced activities in SQLite and update their titles/types on Garmin Connect."""
+        synced_records = self.store.get_all_synced()
         if not synced_records:
             return 0
 
-        logger.info("Verifying %d previously recorded activities in Garmin Connect for correct titles...", len(synced_records))
+        logger.info("Checking %d previously synced activities for title/sport updates on Garmin Connect...", len(synced_records))
         updated_count = 0
+        for rec in synced_records:
+            act_id = rec.get("sole_id")
+            name = rec.get("name")
+            act_date = rec.get("activity_date")
+            sport = rec.get("sport")
 
-        for record in synced_records:
-            sole_id = record["sole_id"]
-            act_date = record.get("activity_date")
             if not act_date:
                 continue
 
-            current_sport = str(record.get("sport") or "RUNNING").upper()
-            stored_name = record.get("name") or ""
+            try:
+                success = self.garmin._try_rename_uploaded_activity(
+                    activity_date_str=act_date,
+                    desired_title=name,
+                    target_sport=sport,
+                    retries=1,
+                    delay_sec=0,
+                    threshold_hours=self.config.duplicate_threshold_hours,
+                )
+                if success:
+                    updated_count += 1
+            except Exception as exc:
+                logger.debug("Retroactive update for %s (%s) failed: %s", act_id, name, exc)
 
-            if current_sport == "WALKING" or "walk" in stored_name.lower():
-                target_sport = "WALKING"
-                desired_title = "Sole Treadmill Indoor Walking"
-            else:
-                target_sport = "RUNNING"
-                desired_title = "Sole Treadmill Indoor Run"
-
-            success = self.garmin._try_rename_uploaded_activity(
-                activity_date_str=act_date,
-                desired_title=desired_title,
-                target_sport=target_sport,
-                retries=1,
-                delay_sec=0,
-                threshold_hours=self.config.duplicate_threshold_hours,
-            )
-
-            if success:
-                updated_count += 1
-                if stored_name != desired_title or current_sport != target_sport:
-                    self.store.record_activity(
-                        sole_id=sole_id,
-                        name=desired_title,
-                        activity_date=act_date,
-                        sport=target_sport,
-                        status=record.get("garmin_status") or "UPLOADED",
-                        notes=record.get("notes") or "Retroactively updated title and sport",
-                    )
-
-        logger.info("Completed verification of previously synced activities (%d updated/verified).", updated_count)
+        logger.info("Retroactive update check completed. %d activities verified/updated.", updated_count)
         return updated_count

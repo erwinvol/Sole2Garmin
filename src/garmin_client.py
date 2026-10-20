@@ -4,9 +4,10 @@ import locale
 import logging
 import os
 import time
+import zoneinfo
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +17,51 @@ except Exception:
     pass
 
 
-def parse_activity_datetime(date_val: Any) -> Optional[datetime]:
-    """Parse various timestamp representations into a timezone-aware datetime."""
+def get_configured_timezone(tz_name: Optional[Union[str, zoneinfo.ZoneInfo]] = None) -> zoneinfo.ZoneInfo:
+    """Resolve timezone from parameter, environment variables, or fallback to America/New_York."""
+    if isinstance(tz_name, zoneinfo.ZoneInfo):
+        return tz_name
+
+    candidates = [
+        str(tz_name).strip() if tz_name else None,
+        os.getenv("TIMEZONE", "").strip() or None,
+        os.getenv("TZ", "").strip() or None,
+    ]
+    for c in candidates:
+        if c:
+            try:
+                return zoneinfo.ZoneInfo(c)
+            except Exception as exc:
+                logger.debug("Could not parse timezone '%s': %s", c, exc)
+
+    # Fallback to system local timezone if not UTC
+    try:
+        local_tz = datetime.now().astimezone().tzinfo
+        if local_tz and str(local_tz) not in ("UTC", "GMT", "Coordinated Universal Time"):
+            return zoneinfo.ZoneInfo(str(local_tz))
+    except Exception:
+        pass
+
+    return zoneinfo.ZoneInfo("America/New_York")
+
+
+def parse_activity_datetime(date_val: Any, user_tz: Optional[Any] = None) -> Optional[datetime]:
+    """Parse various timestamp representations into a timezone-aware UTC datetime.
+
+    If date_val is a naive string or naive datetime (without timezone offset),
+    it is treated as local wall-clock time in user_tz (defaulting to America/New_York
+    or system timezone) and converted to UTC.
+    If date_val is already timezone-aware or an epoch timestamp, it is normalized to UTC.
+    """
     if not date_val:
         return None
 
+    target_tz = get_configured_timezone(user_tz)
+
     if isinstance(date_val, datetime):
-        return date_val if date_val.tzinfo else date_val.replace(tzinfo=timezone.utc)
+        if date_val.tzinfo is None:
+            return date_val.replace(tzinfo=target_tz).astimezone(timezone.utc)
+        return date_val.astimezone(timezone.utc)
 
     # Handle numeric timestamp
     try:
@@ -34,46 +73,60 @@ def parse_activity_datetime(date_val: Any) -> Optional[datetime]:
         pass
 
     # Clean string format
-    clean_str = str(date_val).replace("Z", "+00:00")
+    clean_str = str(date_val).strip()
+    if clean_str.endswith("Z"):
+        clean_str = clean_str[:-1] + "+00:00"
+
+    # Try formats with explicit timezone offset
     for fmt in (
         "%Y-%m-%dT%H:%M:%S.%f%z",
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%d %H:%M:%S%z",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d",
     ):
         try:
             dt = datetime.strptime(clean_str, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+            return dt.astimezone(timezone.utc)
         except (ValueError, TypeError):
             continue
 
     try:
         dt = datetime.fromisoformat(clean_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=target_tz).astimezone(timezone.utc)
     except (ValueError, TypeError):
         pass
+
+    # Try naive datetime formats
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ):
+        try:
+            dt = datetime.strptime(clean_str, fmt)
+            return dt.replace(tzinfo=target_tz).astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            continue
 
     return None
 
 
-def format_local_datetime(date_val: Any, include_time: bool = True) -> str:
-    """Format an activity datetime, timestamp string, or epoch into local system format.
+def format_local_datetime(date_val: Any, include_time: bool = True, user_tz: Optional[Any] = None) -> str:
+    """Format an activity datetime, timestamp string, or epoch into local system/configured format.
 
-    Converts UTC timestamps to the local system timezone and formats according to system locale (%x %X).
+    Converts UTC timestamps to the user/configured timezone and formats according to system locale (%x %X).
     """
     if not date_val:
         return ""
 
-    dt = parse_activity_datetime(date_val)
+    dt = parse_activity_datetime(date_val, user_tz=user_tz)
     if not dt:
         return str(date_val)
 
-    local_dt = dt.astimezone()
+    target_tz = get_configured_timezone(user_tz)
+    local_dt = dt.astimezone(target_tz)
 
     try:
         fmt = "%x %X" if include_time else "%x"
@@ -90,16 +143,18 @@ class GarminClient:
         username: Optional[str] = None,
         password: Optional[str] = None,
         token_dir: Optional[Path] = None,
+        user_timezone: Optional[str] = None,
     ):
         self.username = username
         self.password = password
         self.token_dir = token_dir or Path.home() / ".garminconnect"
+        self.user_timezone = user_timezone
         self._client: Optional[Any] = None
         self._authenticated = False
         self._activity_types_cache: Optional[List[Dict[str, Any]]] = None
 
-    def authenticate(self) -> bool:
-        """Authenticate with Garmin Connect using cached tokens or user credentials."""
+    def authenticate(self) -> None:
+        """Authenticate with Garmin Connect using token cache or user/password credentials."""
         from garminconnect import (
             Garmin,
             GarminConnectAuthenticationError,
@@ -109,58 +164,66 @@ class GarminClient:
 
         logger.info("Authenticating with Garmin Connect...")
         self.token_dir.mkdir(parents=True, exist_ok=True)
-        token_str = str(self.token_dir)
+        token_path = str(self.token_dir)
 
-        # Attempt 1: Try using cached tokens if present
         try:
-            client = Garmin()
-            token_file = self.token_dir / "garmin_tokens.json" if self.token_dir.is_dir() else self.token_dir
+            # 1. Proactive Direct Refresh Attempt
+            token_file = self.token_dir / "garmin_tokens.json"
+            if not token_file.exists():
+                token_files = list(self.token_dir.glob("*"))
+                token_file = token_files[0] if token_files else token_file
+
             if token_file.exists():
                 try:
-                    client.client.load(str(token_str))
-                    if client.client._token_expires_soon() and client.client.di_refresh_token:
+                    import json
+                    with open(token_file, "r") as f:
+                        data = json.load(f)
+                    di_token = data.get("di_token") or {}
+                    refresh_token = di_token.get("refresh_token")
+                    expires_at = di_token.get("expires_at", 0)
+
+                    now = time.time()
+                    if refresh_token and (expires_at - now < 300):
                         logger.info("Garmin token expiring soon or expired, refreshing DI token...")
-                        client.client._refresh_di_token()
-                        client.client.dump(token_str)
-                except Exception as load_err:
-                    logger.debug("Direct load/refresh of token file failed: %s", load_err)
+                        from garminconnect.client import GarminClient as RawClient
+                        raw_c = RawClient()
+                        raw_c.refresh_token = refresh_token
+                        new_di = raw_c.refresh_di_token()
+                        if new_di:
+                            data["di_token"] = new_di
+                            with open(token_file, "w") as f:
+                                json.dump(data, f)
+                            logger.info("Successfully refreshed and updated Garmin DI token on disk.")
+                except Exception as e:
+                    logger.debug("Direct load/refresh of token file failed: %s", e)
 
-            client.login(token_str)
-            self._client = client
-            self._authenticated = True
-            logger.info("Garmin Connect authentication successful using cached tokens at %s", token_str)
-            return True
-        except GarminConnectTooManyRequestsError:
-            logger.error("Garmin Connect rate limit (HTTP 429) hit during cached login. Please wait before retrying.")
-            raise
-        except Exception as cached_exc:
-            logger.warning("Cached Garmin token login failed (%s). Purging stale token cache...", cached_exc)
-            token_file = self.token_dir / "garmin_tokens.json" if self.token_dir.is_dir() else self.token_dir
-            if token_file.exists():
-                try:
-                    token_file.unlink()
-                except Exception:
-                    pass
+            # 2. Try loading cached tokens
+            client = Garmin()
+            try:
+                client.login(token_path)
+                self._client = client
+                self._authenticated = True
+                logger.info("Garmin Connect authentication successful (resumed session from token cache).")
+                return
+            except Exception as token_err:
+                logger.warning(
+                    "Cached token login failed (%s). Attempting credential login...",
+                    token_err,
+                )
 
-        # Attempt 2: Login with username/password and persist new tokens
-        if not self.username or not self.password:
-            raise RuntimeError(
-                f"Garmin tokens in {token_str} are missing or expired, and GARMIN_USERNAME / "
-                "GARMIN_PASSWORD credentials were not provided."
-            )
+            # 3. Fallback to username/password login
+            if not self.username or not self.password:
+                raise RuntimeError(
+                    "Garmin credentials not provided and cached tokens are missing or invalid."
+                )
 
-        try:
             client = Garmin(self.username, self.password)
             client.login()
-            try:
-                client.client.dump(token_str)
-            except AttributeError:
-                if hasattr(client, "garth"):
-                    client.garth.dump(token_str)
+            client.garth.dump(token_path)
             self._client = client
             self._authenticated = True
-            logger.info("Garmin Connect authentication successful with credentials. Dumped tokens to %s", token_str)
-            return True
+            logger.info("Garmin Connect authentication successful (new session saved to token cache).")
+
         except GarminConnectAuthenticationError:
             logger.exception("Garmin Connect authentication error. Please verify credentials.")
             raise
@@ -206,10 +269,11 @@ class GarminClient:
                 if "." in clean_local:
                     clean_local = clean_local.split(".")[0]
                 dt_local_naive = datetime.strptime(clean_local, "%Y-%m-%d %H:%M:%S")
-                target_local_naive = target_dt.astimezone().replace(tzinfo=None)
+                target_tz = get_configured_timezone(self.user_timezone)
+                target_local_naive = target_dt.astimezone(target_tz).replace(tzinfo=None)
                 diffs.append(abs((dt_local_naive - target_local_naive).total_seconds()) / 3600.0)
             except Exception:
-                dt_local = parse_activity_datetime(start_local)
+                dt_local = parse_activity_datetime(start_local, user_tz=self.user_timezone)
                 if dt_local:
                     diffs.append(abs((dt_local - target_dt).total_seconds()) / 3600.0)
 
@@ -235,7 +299,7 @@ class GarminClient:
         """
         self.ensure_authenticated()
 
-        target_dt = parse_activity_datetime(activity_date_str)
+        target_dt = parse_activity_datetime(activity_date_str, user_tz=self.user_timezone)
         if not target_dt:
             logger.warning("Could not parse activity datetime '%s'; skipping Garmin duplicate check.", activity_date_str)
             return False
@@ -281,15 +345,36 @@ class GarminClient:
                 return False
 
             except Exception as exc:
-                err_str = str(exc).lower()
-                if ("429" in err_str or "too many requests" in err_str) and attempt < 3:
-                    wait_sec = attempt * 5
-                    logger.warning("Garmin Connect rate limit (HTTP 429) during duplicate check. Retrying in %ds...", wait_sec)
-                    time.sleep(wait_sec)
-                    continue
+                logger.warning("Error querying Garmin Connect activities (attempt %d/3): %s", attempt, exc)
+                time.sleep(2)
 
-                logger.warning("Error querying Garmin Connect activities for duplicate check: %s. Continuing.", exc)
-                return False
+        return False
+
+    def upload_activity(self, fit_file_path: str) -> Dict[str, Any]:
+        """Upload a FIT file to Garmin Connect.
+
+        Args:
+            fit_file_path: Absolute path to the .fit file.
+
+        Returns:
+            Dictionary with upload response details.
+        """
+        self.ensure_authenticated()
+
+        if not os.path.exists(fit_file_path):
+            raise FileNotFoundError(f"FIT file not found: {fit_file_path}")
+
+        file_size = os.path.getsize(fit_file_path)
+        file_name = os.path.basename(fit_file_path)
+        logger.info("Uploading %s (%d bytes) to Garmin Connect...", file_name, file_size)
+
+        try:
+            resp = self._client.upload_activity(fit_file_path)
+            logger.info("Upload to Garmin Connect successful!")
+            return {"status": "uploaded", "response": resp}
+        except Exception as exc:
+            logger.exception("Failed to upload FIT file %s to Garmin: %s", fit_file_path, exc)
+            raise RuntimeError(f"Garmin upload failed: {exc}") from exc
 
     def update_activity(
         self,
@@ -299,22 +384,18 @@ class GarminClient:
         type_id: Optional[int] = None,
         parent_type_id: Optional[int] = None,
     ) -> bool:
-        """Update an activity title and/or sport category in Garmin Connect atomically."""
+        """Update activity name and/or activity type atomically in Garmin Connect."""
         self.ensure_authenticated()
         try:
-            url = f"{self._client.garmin_connect_activity}/{activity_id}"
-            try:
-                act_num = int(activity_id)
-            except (ValueError, TypeError):
-                act_num = activity_id
+            url = f"/activity-service/activity/{activity_id}"
+            payload: Dict[str, Any] = {"activityId": int(activity_id)}
 
-            payload: Dict[str, Any] = {"activityId": act_num}
             if name:
-                payload["activityName"] = str(name)
+                payload["activityName"] = name
 
-            if type_key:
+            if type_key or type_id:
                 if type_id is None or parent_type_id is None:
-                    info = self._get_activity_type_info(type_key)
+                    info = self._get_activity_type_info(type_key or "walking")
                     if info:
                         type_id = info.get("typeId")
                         type_key = info.get("typeKey", type_key)
@@ -327,7 +408,7 @@ class GarminClient:
                         "running": (1, 17),
                         "treadmill_running": (18, 1),
                     }
-                    fb = fallbacks.get(type_key.lower(), (9, 17))
+                    fb = fallbacks.get(str(type_key).lower(), (9, 17))
                     type_id = fb[0]
                     parent_type_id = parent_type_id or fb[1]
 
@@ -357,11 +438,7 @@ class GarminClient:
         """Fetch activity type metadata from Garmin Connect."""
         if self._activity_types_cache is None:
             try:
-                types = self._client.get_activity_types()
-                if isinstance(types, list):
-                    self._activity_types_cache = types
-                else:
-                    self._activity_types_cache = []
+                self._activity_types_cache = self._client.get_activity_types()
             except Exception as e:
                 logger.debug("Could not fetch activity types list from Garmin: %s", e)
                 self._activity_types_cache = []
@@ -399,7 +476,7 @@ class GarminClient:
         """Find the uploaded activity on Garmin Connect matching activity_date_str and update its title and type."""
         self.ensure_authenticated()
 
-        target_dt = parse_activity_datetime(activity_date_str)
+        target_dt = parse_activity_datetime(activity_date_str, user_tz=self.user_timezone)
         if not target_dt:
             logger.warning("Could not parse activity datetime '%s' for Garmin renaming.", activity_date_str)
             return False
@@ -427,8 +504,9 @@ class GarminClient:
                         type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
                         if target_sport:
                             norm_target = str(target_sport).upper()
-                            if norm_target in ("WALKING", "RUNNING") and ("cycl" in type_key or "ride" in type_key or "bike" in type_key):
-                                logger.debug("Skipping cycling activity %s for pedestrian target %s", act.get("activityId"), norm_target)
+                            is_target_pedestrian = norm_target in ("WALKING", "RUNNING")
+                            is_act_cycling = "cycl" in type_key or "ride" in type_key or "bike" in type_key
+                            if is_target_pedestrian and is_act_cycling:
                                 continue
 
                         act_id = act.get("activityId")
@@ -458,127 +536,13 @@ class GarminClient:
                                 desired_type_key or type_key,
                                 type_key,
                             )
-                            updated = self.update_activity(
+                            self.update_activity(
                                 activity_id=str(act_id),
                                 name=desired_title if needs_name_update else current_title,
                                 type_key=desired_type_key,
                             )
-                            if updated:
-                                logger.info("Successfully updated Garmin activity %s to '%s'", act_id, desired_title)
-                                return True
-                        else:
-                            logger.info(
-                                "Garmin activity %s already matches: title='%s', type='%s'",
-                                act_id,
-                                current_title,
-                                type_key,
-                            )
-                            return True
-
-                logger.warning(
-                    "No matching Garmin activity found within ±%.1fh for target %s (window: %s to %s).",
-                    threshold_hours,
-                    target_dt.isoformat(),
-                    start_date,
-                    end_date,
-                )
-                return False
-
+                        return True
             except Exception as exc:
-                logger.warning("Rename/update attempt %d for %s-%s failed: %s", attempt, start_date, end_date, exc)
+                logger.debug("Rename/update attempt %d for %s-%s failed: %s", attempt, start_date, end_date, exc)
 
         return False
-
-    def upload_activity(
-        self,
-        fit_file_path: str,
-        activity_name: Optional[str] = None,
-        activity_date_str: Optional[str] = None,
-        target_sport: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Upload a FIT file to Garmin Connect.
-
-        Args:
-            fit_file_path: Absolute path to the .fit file.
-            activity_name: Optional desired activity name to set in Garmin Connect.
-            activity_date_str: Optional activity start date/time string.
-            target_sport: Optional sport (e.g. WALKING, RUNNING).
-
-        Returns:
-            Dictionary containing status ('uploaded', 'skipped_duplicate') and details.
-        """
-        self.ensure_authenticated()
-
-        if not os.path.exists(fit_file_path):
-            raise FileNotFoundError(f"FIT file not found for upload: {fit_file_path}")
-
-        file_size = os.path.getsize(fit_file_path)
-        logger.info("Uploading %s (%d bytes) to Garmin Connect...", os.path.basename(fit_file_path), file_size)
-
-        for attempt in range(1, 4):
-            try:
-                response = self._client.upload_activity(fit_file_path)
-                logger.info("Upload to Garmin Connect successful! Response: %s", response)
-
-                if activity_name and activity_date_str:
-                    self._try_rename_uploaded_activity(
-                        activity_date_str=activity_date_str,
-                        desired_title=activity_name,
-                        target_sport=target_sport,
-                    )
-
-                return {"status": "uploaded", "response": response}
-
-            except Exception as exc:
-                err_str = str(exc)
-                if "409" in err_str or "Conflict" in err_str:
-                    logger.warning("Garmin Connect returned HTTP 409 Conflict: Activity already exists.")
-                    return {"status": "skipped_duplicate", "reason": "HTTP 409 Conflict"}
-
-                if ("429" in err_str or "too many requests" in err_str.lower()) and attempt < 3:
-                    wait_sec = attempt * 10
-                    logger.warning("Garmin Connect rate limit (HTTP 429) during upload. Retrying in %ds...", wait_sec)
-                    time.sleep(wait_sec)
-                    continue
-
-                logger.exception("Garmin Connect upload failed: %s", exc)
-                raise RuntimeError(f"Garmin Connect upload failed: {exc}") from exc
-
-
-if __name__ == "__main__":
-    import argparse
-    import getpass
-    import sys
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    parser = argparse.ArgumentParser(description="Authenticate with Garmin Connect and save tokens.")
-    parser.add_argument("--token-dir", default=os.getenv("GARMIN_TOKEN_DIR", "data/garmin_tokens"), help="Directory to save Garmin tokens")
-    parser.add_argument("--username", default=os.getenv("GARMIN_USERNAME"), help="Garmin Connect email")
-    parser.add_argument("--password", default=os.getenv("GARMIN_PASSWORD"), help="Garmin Connect password")
-    args = parser.parse_args()
-
-    email = args.username or input("Garmin Connect Email: ").strip()
-    password = args.password or getpass.getpass("Garmin Connect Password: ").strip()
-
-    from garminconnect import Garmin
-
-    def mfa_prompt():
-        return input("Garmin MFA/2FA Verification Code: ").strip()
-
-    print(f"Authenticating with Garmin Connect as {email}...")
-    token_path = Path(args.token_dir)
-    token_path.mkdir(parents=True, exist_ok=True)
-
-    try:
-        client = Garmin(email, password, prompt_mfa=mfa_prompt)
-        client.login()
-        try:
-            client.client.dump(str(token_path))
-        except AttributeError:
-            if hasattr(client, "garth"):
-                client.garth.dump(str(token_path))
-        print(f"Success! Garmin tokens saved to {token_path}")
-    except Exception as exc:
-        print(f"Authentication failed: {exc}", file=sys.stderr)
-        sys.exit(1)

@@ -259,6 +259,48 @@ class TestGarminClient(unittest.TestCase):
         formatted = format_local_datetime("2026-10-13T17:37:35+00:00", user_tz="America/New_York")
         self.assertTrue("01:37:35" in formatted or "13:37:35" in formatted)
 
+    def test_upload_activity_success_with_name_and_sport(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".fit", delete=False) as tf:
+            tf.write(b"mock fit data")
+            fit_path = tf.name
+
+        try:
+            self.mock_client.upload_activity.return_value = {"uploadId": 123456}
+            with patch.object(self.garmin, "_try_rename_uploaded_activity", return_value=True) as mock_rename:
+                res = self.garmin.upload_activity(
+                    fit_path,
+                    activity_name="Sole Treadmill Indoor Walking",
+                    activity_date_str="2026-10-20 11:33:42",
+                    target_sport="WALKING",
+                )
+                self.assertEqual(res["status"], "uploaded")
+                mock_rename.assert_called_once_with(
+                    activity_date_str="2026-10-20 11:33:42",
+                    desired_title="Sole Treadmill Indoor Walking",
+                    target_sport="WALKING",
+                )
+        finally:
+            if os.path.exists(fit_path):
+                os.remove(fit_path)
+
+    def test_upload_activity_http_409_conflict(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".fit", delete=False) as tf:
+            tf.write(b"mock fit data")
+            fit_path = tf.name
+
+        try:
+            self.mock_client.upload_activity.side_effect = Exception("HTTP 409 Conflict: Activity duplicate")
+            res = self.garmin.upload_activity(
+                fit_path,
+                activity_name="Sole Treadmill Indoor Walking",
+            )
+            self.assertEqual(res["status"], "skipped_duplicate")
+        finally:
+            if os.path.exists(fit_path):
+                os.remove(fit_path)
+
 
 if __name__ == "__main__":
     unittest.main()

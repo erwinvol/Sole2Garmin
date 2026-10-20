@@ -350,14 +350,25 @@ class GarminClient:
 
         return False
 
-    def upload_activity(self, fit_file_path: str) -> Dict[str, Any]:
+    def upload_activity(
+        self,
+        fit_file_path: str,
+        activity_name: Optional[str] = None,
+        activity_date_str: Optional[str] = None,
+        target_sport: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         """Upload a FIT file to Garmin Connect.
 
         Args:
             fit_file_path: Absolute path to the .fit file.
+            activity_name: Optional desired activity name to set in Garmin Connect.
+            activity_date_str: Optional activity start date/time string.
+            target_sport: Optional sport (e.g. WALKING, RUNNING).
+            **kwargs: Additional optional parameters.
 
         Returns:
-            Dictionary with upload response details.
+            Dictionary with upload response details ('status', 'response', or 'skipped_duplicate').
         """
         self.ensure_authenticated()
 
@@ -368,13 +379,33 @@ class GarminClient:
         file_name = os.path.basename(fit_file_path)
         logger.info("Uploading %s (%d bytes) to Garmin Connect...", file_name, file_size)
 
-        try:
-            resp = self._client.upload_activity(fit_file_path)
-            logger.info("Upload to Garmin Connect successful!")
-            return {"status": "uploaded", "response": resp}
-        except Exception as exc:
-            logger.exception("Failed to upload FIT file %s to Garmin: %s", fit_file_path, exc)
-            raise RuntimeError(f"Garmin upload failed: {exc}") from exc
+        for attempt in range(1, 4):
+            try:
+                resp = self._client.upload_activity(fit_file_path)
+                logger.info("Upload to Garmin Connect successful!")
+
+                if activity_name and activity_date_str:
+                    self._try_rename_uploaded_activity(
+                        activity_date_str=activity_date_str,
+                        desired_title=activity_name,
+                        target_sport=target_sport,
+                    )
+
+                return {"status": "uploaded", "response": resp}
+            except Exception as exc:
+                err_str = str(exc)
+                if "409" in err_str or "Conflict" in err_str:
+                    logger.warning("Garmin Connect returned HTTP 409 Conflict: Activity already exists.")
+                    return {"status": "skipped_duplicate", "reason": "HTTP 409 Conflict"}
+
+                if ("429" in err_str or "too many requests" in err_str.lower()) and attempt < 3:
+                    wait_sec = attempt * 10
+                    logger.warning("Garmin Connect rate limit (HTTP 429) during upload. Retrying in %ds...", wait_sec)
+                    time.sleep(wait_sec)
+                    continue
+
+                logger.exception("Failed to upload FIT file %s to Garmin: %s", fit_file_path, exc)
+                raise RuntimeError(f"Garmin upload failed: {exc}") from exc
 
     def update_activity(
         self,

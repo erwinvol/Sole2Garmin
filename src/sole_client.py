@@ -44,6 +44,7 @@ class SoleClient:
         token_dir: Optional[Path] = None,
         sample_dir: Optional[Path] = None,
         walk_run_threshold_kmh: float = 6.0,
+        unit_system: str = "auto",
     ):
         def _clean_cred(s: Optional[str]) -> str:
             v = (s or "").strip()
@@ -57,6 +58,7 @@ class SoleClient:
         self.token_dir = token_dir or Path("data/sole_tokens")
         self.sample_dir = sample_dir or Path("data/sample_activities")
         self.walk_run_threshold_kmh = float(walk_run_threshold_kmh)
+        self.unit_system = (unit_system or "auto").lower()
 
         self.session_id: Optional[str] = None
         self.login_token: Optional[str] = None
@@ -672,9 +674,14 @@ class SoleClient:
             dist_meters = dist * 1609.344
         elif dist_unit in ("m", "meters"):
             dist_meters = dist
-        elif dist > 0 and dist < 100.0:
-            # Stored as kilometers or miles in summary
+        elif dist_unit in ("km", "kilometers"):
             dist_meters = dist * 1000.0
+        elif dist > 0 and dist < 100.0:
+            # Stored as kilometers or miles in summary depending on unit system
+            if self.unit_system == "imperial":
+                dist_meters = dist * 1609.344
+            else:
+                dist_meters = dist * 1000.0
         else:
             dist_meters = dist
 
@@ -702,17 +709,28 @@ class SoleClient:
             avg_speed_mps = avg_speed * 0.44704
         elif speed_unit in ("mps", "m/s"):
             avg_speed_mps = avg_speed
-        elif avg_speed > 1.0 and avg_speed < 40.0:
-            # Typically reported in km/h by Dyaco treadmill console
+        elif speed_unit in ("kmh", "km/h", "kph"):
             avg_speed_mps = avg_speed / 3.6
         elif avg_speed > 0:
-            avg_speed_mps = avg_speed
+            if self.unit_system == "imperial":
+                avg_speed_mps = avg_speed * 0.44704
+            elif avg_speed > 1.0 and avg_speed < 40.0:
+                # Typically reported in km/h by Dyaco treadmill console in metric mode
+                avg_speed_mps = avg_speed / 3.6
+            else:
+                avg_speed_mps = avg_speed
         else:
             avg_speed_mps = (dist_meters / duration) if duration > 0 else 0.0
 
         avg_speed_kmh = avg_speed_mps * 3.6
         max_speed = float(item.get("maxSpeed") or item.get("max_speed") or 0.0)
-        max_speed_mps = (max_speed / 3.6) if max_speed > 0 else (avg_speed_mps * 1.15)
+        if max_speed > 0:
+            if speed_unit in ("mph", "mi/h") or (not speed_unit and self.unit_system == "imperial"):
+                max_speed_mps = max_speed * 0.44704
+            else:
+                max_speed_mps = max_speed / 3.6
+        else:
+            max_speed_mps = avg_speed_mps * 1.15
 
         # Equipment / Sport resolution from WorkoutViewVo
         machine_cat = item.get("_machineCategoryType") or item.get("machineCategoryType")
@@ -800,19 +818,25 @@ class SoleClient:
             if not pt_ts:
                 pt_ts = int(base_ms + (float(sec_offset) * 1000.0))
 
-            # Speed: convert km/h to m/s if necessary
+            # Speed: convert to m/s if necessary
             pt_speed = pt.get("speed") or pt.get("speedMps")
             if pt_speed is not None:
                 pt_speed = float(pt_speed)
-                if pt_speed > 1.0 and pt_speed < 40.0 and "speedMps" not in pt:
-                    pt_speed = pt_speed / 3.6  # km/h to m/s
+                if pt_speed > 0 and "speedMps" not in pt:
+                    if self.unit_system == "imperial":
+                        pt_speed = pt_speed * 0.44704
+                    elif pt_speed > 1.0 and pt_speed < 40.0:
+                        pt_speed = pt_speed / 3.6  # km/h to m/s
 
             # Distance in meters
             pt_dist = pt.get("distance") or pt.get("distanceMeters") or pt.get("totalDistance")
             if pt_dist is not None:
                 pt_dist = float(pt_dist)
                 if pt_dist < 100.0 and pt_dist > 0 and "distanceMeters" not in pt:
-                    pt_dist = pt_dist * 1000.0
+                    if self.unit_system == "imperial":
+                        pt_dist = pt_dist * 1609.344
+                    else:
+                        pt_dist = pt_dist * 1000.0
 
             point_record: Dict[str, Any] = {"timestamp": pt_ts}
             if pt_speed is not None:

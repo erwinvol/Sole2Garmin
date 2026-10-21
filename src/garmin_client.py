@@ -257,9 +257,16 @@ class GarminClient:
         # 2. startTimeGMT (UTC string)
         start_gmt = act.get("startTimeGMT")
         if start_gmt:
-            dt_gmt = parse_activity_datetime(start_gmt)
-            if dt_gmt:
+            try:
+                clean_gmt = str(start_gmt).strip().replace("T", " ")
+                if "." in clean_gmt:
+                    clean_gmt = clean_gmt.split(".")[0]
+                dt_gmt = datetime.strptime(clean_gmt, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
                 diffs.append(abs((dt_gmt - target_dt).total_seconds()) / 3600.0)
+            except Exception:
+                dt_gmt = parse_activity_datetime(start_gmt)
+                if dt_gmt:
+                    diffs.append(abs((dt_gmt - target_dt).total_seconds()) / 3600.0)
 
         # 3. startTimeLocal (local naive or ISO string)
         start_local = act.get("startTimeLocal") or act.get("startTime")
@@ -528,51 +535,72 @@ class GarminClient:
                     desired_title,
                     target_dt.isoformat(),
                 )
+                candidates = []
                 for act in activities:
-                    hours_diff = self._compute_activity_time_difference(target_dt, act)
+                    act_id = act.get("activityId")
+                    if not act_id:
+                        continue
 
-                    if hours_diff <= threshold_hours:
-                        type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
-                        if target_sport:
-                            norm_target = str(target_sport).upper()
-                            is_target_pedestrian = norm_target in ("WALKING", "RUNNING")
-                            is_act_cycling = "cycl" in type_key or "ride" in type_key or "bike" in type_key
-                            if is_target_pedestrian and is_act_cycling:
-                                continue
-
-                        act_id = act.get("activityId")
-                        if not act_id:
+                    type_key = str(act.get("activityType", {}).get("typeKey", "")).lower()
+                    if target_sport:
+                        norm_target = str(target_sport).upper()
+                        is_target_pedestrian = norm_target in ("WALKING", "RUNNING")
+                        is_act_cycling = "cycl" in type_key or "ride" in type_key or "bike" in type_key
+                        if is_target_pedestrian and is_act_cycling:
                             continue
 
-                        current_title = act.get("activityName")
-                        needs_name_update = bool(desired_title and current_title != desired_title)
-                        needs_type_update = False
-                        desired_type_key = None
+                    hours_diff = self._compute_activity_time_difference(target_dt, act)
+                    if hours_diff <= threshold_hours:
+                        candidates.append((hours_diff, act))
 
-                        if target_sport:
-                            norm_target = str(target_sport).upper()
-                            if norm_target == "WALKING" and "walk" not in type_key:
-                                needs_type_update = True
-                                desired_type_key = "walking"
-                            elif norm_target == "RUNNING" and "run" not in type_key:
-                                needs_type_update = True
-                                desired_type_key = "running"
+                if not candidates:
+                    continue
 
-                        if needs_name_update or needs_type_update:
-                            logger.info(
-                                "Updating Garmin activity %s: title='%s' (was '%s'), type='%s' (was '%s')...",
+                # Select candidate with minimal time difference
+                candidates.sort(key=lambda c: c[0])
+                best_diff, best_act = candidates[0]
+                act_id = best_act.get("activityId")
+                current_title = best_act.get("activityName")
+                type_key = str(best_act.get("activityType", {}).get("typeKey", "")).lower()
+
+                needs_name_update = bool(desired_title and current_title != desired_title)
+                needs_type_update = False
+                desired_type_key = None
+
+                if target_sport:
+                    norm_target = str(target_sport).upper()
+                    if norm_target == "WALKING" and "walk" not in type_key:
+                        # Prevent reclassifying a running workout to walking if time diff is too loose (> 0.5h)
+                        is_running_act = "run" in type_key
+                        if is_running_act and best_diff > 0.5:
+                            logger.warning(
+                                "Skipping reclassification of Garmin activity %s (%s, diff=%.2fh) to walking to protect existing run.",
                                 act_id,
-                                desired_title,
-                                current_title,
-                                desired_type_key or type_key,
                                 type_key,
+                                best_diff,
                             )
-                            self.update_activity(
-                                activity_id=str(act_id),
-                                name=desired_title if needs_name_update else current_title,
-                                type_key=desired_type_key,
-                            )
-                        return True
+                        else:
+                            needs_type_update = True
+                            desired_type_key = "walking"
+                    elif norm_target == "RUNNING" and "run" not in type_key:
+                        needs_type_update = True
+                        desired_type_key = "running"
+
+                if needs_name_update or needs_type_update:
+                    logger.info(
+                        "Updating Garmin activity %s: title='%s' (was '%s'), type='%s' (was '%s')...",
+                        act_id,
+                        desired_title,
+                        current_title,
+                        desired_type_key or type_key,
+                        type_key,
+                    )
+                    self.update_activity(
+                        activity_id=str(act_id),
+                        name=desired_title if needs_name_update else current_title,
+                        type_key=desired_type_key,
+                    )
+                return True
             except Exception as exc:
                 logger.debug("Rename/update attempt %d for %s-%s failed: %s", attempt, start_date, end_date, exc)
 

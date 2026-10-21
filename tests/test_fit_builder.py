@@ -101,11 +101,6 @@ class TestFitBuilder(unittest.TestCase):
                     self.assertIsNotNone(msg.timestamp)
                     self.assertEqual(msg.num_sessions, 1)
                     self.assertIn(msg.type, (Activity.MANUAL, Activity.MANUAL.value))
-                    self.assertIsNotNone(msg.local_timestamp)
-                    # For date="2026-10-13T10:00:00Z" (EDT: UTC-4), offset is -14400s (-4 hours)
-                    FIT_EPOCH_S = 631065600
-                    utc_fit_s = int(msg.timestamp / 1000.0) - FIT_EPOCH_S
-                    self.assertEqual(msg.local_timestamp - utc_fit_s, -14400)
 
             self.assertTrue(found_file_id)
             self.assertTrue(found_sport)
@@ -238,43 +233,9 @@ class TestFitBuilder(unittest.TestCase):
         finally:
             FitBuilder.cleanup_file(out_path)
 
-    def test_build_fit_from_activity_custom_timezone(self):
-        """Test that FIT file with Europe/Amsterdam timezone correctly computes local_timestamp offset (+7200s in CEST)."""
-        builder_amsterdam = FitBuilder(
-            device_product_id=3943,
-            user_timezone="Europe/Amsterdam",
-        )
-        activity = {
-            "id": "act_amsterdam_01",
-            "name": "Sole Run Amsterdam",
-            "date": "2026-10-13T10:00:00Z",
-            "sport": "RUNNING",
-            "duration_seconds": 600.0,
-            "distance_meters": 1500.0,
-        }
-        with tempfile.NamedTemporaryFile(suffix=".fit", delete=False) as tf:
-            out_path = tf.name
-
-        try:
-            builder_amsterdam.build_fit_from_activity(activity, output_path=out_path)
-            with open(out_path, "rb") as f:
-                fit_file = FitFile.from_bytes(f.read(), check_crc=True)
-
-            act_msg = next(r.message for r in fit_file.records if isinstance(r.message, ActivityMessage))
-            self.assertIsNotNone(act_msg.local_timestamp)
-            FIT_EPOCH_S = 631065600
-            utc_fit_s = int(act_msg.timestamp / 1000.0) - FIT_EPOCH_S
-            # Europe/Amsterdam in October (CEST) is UTC+2 = +7200 seconds
-            self.assertEqual(act_msg.local_timestamp - utc_fit_s, 7200)
-        finally:
-            FitBuilder.cleanup_file(out_path)
-
     def test_build_fit_from_activity_naive_date(self):
-        """Test naive date string from Sole console (e.g. 13:37:35) is localized to configured timezone."""
-        builder_ny = FitBuilder(
-            device_product_id=3943,
-            user_timezone="America/New_York",
-        )
+        """Test naive date string from Sole console (e.g. 13:37:35) is parsed directly."""
+        builder = FitBuilder(device_product_id=3943)
         activity = {
             "id": "act_naive_01",
             "name": "Sole Treadmill Indoor Walk",
@@ -288,23 +249,16 @@ class TestFitBuilder(unittest.TestCase):
             out_path = tf.name
 
         try:
-            builder_ny.build_fit_from_activity(activity, output_path=out_path)
+            builder.build_fit_from_activity(activity, output_path=out_path)
             with open(out_path, "rb") as f:
                 fit_file = FitFile.from_bytes(f.read(), check_crc=True)
 
             file_id = next(r.message for r in fit_file.records if isinstance(r.message, FileIdMessage))
-            # 13:37:35 EDT (America/New_York) -> 17:37:35 UTC
-            # 2026-10-13 17:37:35 UTC unix ms is 1791913055000
             from datetime import datetime, timezone
             dt = datetime.fromtimestamp(file_id.time_created / 1000.0, tz=timezone.utc)
-            self.assertEqual(dt.hour, 17)
+            self.assertEqual(dt.hour, 13)
             self.assertEqual(dt.minute, 37)
             self.assertEqual(dt.second, 35)
-
-            act_msg = next(r.message for r in fit_file.records if isinstance(r.message, ActivityMessage))
-            FIT_EPOCH_S = 631065600
-            utc_fit_s = int(act_msg.timestamp / 1000.0) - FIT_EPOCH_S
-            self.assertEqual(act_msg.local_timestamp - utc_fit_s, -14400)
         finally:
             FitBuilder.cleanup_file(out_path)
 

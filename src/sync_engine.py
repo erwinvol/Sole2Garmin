@@ -39,7 +39,6 @@ class SyncEngine:
                     token_dir=config.sole_token_dir,
                     sample_dir=config.sample_dir,
                     walk_run_threshold_kmh=config.walk_run_threshold_kmh,
-                    unit_system=config.sole_unit_system,
                 )
             else:
                 active_source = StravaClient(
@@ -59,13 +58,11 @@ class SyncEngine:
             username=config.garmin_username,
             password=config.garmin_password,
             token_dir=config.garmin_token_dir,
-            user_timezone=config.timezone,
         )
         self.builder = builder or FitBuilder(
             spoof_device=config.spoof_garmin_device,
             device_product_id=config.device_product_id,
             software_version=config.device_software_version,
-            user_timezone=config.timezone,
         )
         db_path = config.data_dir / "sync_state.db"
         self.store = store or SyncStore(db_path=db_path)
@@ -163,7 +160,7 @@ class SyncEngine:
                 "Evaluating Sole activity: %s (ID: %s, Date: %s, Sport: %s/%s, Speed: %.1f km/h [Threshold: %.1f km/h])",
                 name,
                 act_id,
-                format_local_datetime(act_date, user_tz=self.config.timezone),
+                format_local_datetime(act_date),
                 sport,
                 sub_sport,
                 avg_kmh,

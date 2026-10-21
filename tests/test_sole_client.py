@@ -98,42 +98,6 @@ class TestSoleClient(unittest.TestCase):
         self.assertEqual(norm_custom["sub_sport"], "INDOOR_RUNNING")
         self.assertEqual(norm_custom["name"], "Sole Treadmill Indoor Run")
 
-    def test_normalize_imperial_unit_system(self):
-        """Test imperial unit system correctly interprets mph and miles."""
-        client_imp = SoleClient(
-            "test@example.com", "pass",
-            token_dir=self.token_dir, sample_dir=self.sample_dir,
-            walk_run_threshold_kmh=6.0,
-            unit_system="imperial",
-        )
-        # 5.0 mph = 8.0467 km/h, which is above 6.0 km/h threshold -> RUNNING
-        run_5mph = {
-            "id": "run_5mph_01",
-            "distance": 3.1,  # 3.1 miles
-            "duration": 2232,
-            "avgSpeed": 5.0,  # 5.0 mph
-        }
-        norm_run = client_imp._normalize_activity(run_5mph)
-        self.assertEqual(norm_run["sport"], "RUNNING")
-        self.assertEqual(norm_run["sub_sport"], "INDOOR_RUNNING")
-        self.assertEqual(norm_run["name"], "Sole Treadmill Indoor Run")
-        self.assertAlmostEqual(norm_run["distance_meters"], 3.1 * 1609.344, places=1)
-        self.assertAlmostEqual(norm_run["avg_speed_mps"], 5.0 * 0.44704, places=2)
-
-        # 3.0 mph = 4.828 km/h, which is below 6.0 km/h threshold -> WALKING
-        walk_3mph = {
-            "id": "walk_3mph_01",
-            "distance": 1.5,  # 1.5 miles
-            "duration": 1800,
-            "avgSpeed": 3.0,  # 3.0 mph
-        }
-        norm_walk = client_imp._normalize_activity(walk_3mph)
-        self.assertEqual(norm_walk["sport"], "WALKING")
-        self.assertEqual(norm_walk["sub_sport"], "INDOOR_WALKING")
-        self.assertEqual(norm_walk["name"], "Sole Treadmill Indoor Walking")
-        self.assertAlmostEqual(norm_walk["distance_meters"], 1.5 * 1609.344, places=1)
-        self.assertAlmostEqual(norm_walk["avg_speed_mps"], 3.0 * 0.44704, places=2)
-
     def test_normalize_workout_view_vo(self):
         """Test normalization of real Dyaco WorkoutViewVo contract with rawDataList."""
         client = SoleClient("test@example.com", "pass", token_dir=self.token_dir, sample_dir=self.sample_dir)

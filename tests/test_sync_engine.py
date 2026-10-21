@@ -196,6 +196,41 @@ class TestSyncEngine(unittest.TestCase):
         recent = self.store.get_recent_synced(1)
         self.assertEqual(recent[0]["name"], "Sole Treadmill Indoor Walking")
 
+    def test_sync_previously_synced_activities_restores_running_sport(self):
+        # Activity was incorrectly marked as WALKING in database due to earlier bug
+        self.store.record_activity("run_restored", "Sole Treadmill Indoor Walking", "2026-10-13T12:00:00Z", "WALKING", "UPLOADED")
+        self.mock_garmin._try_rename_uploaded_activity.return_value = True
+
+        # When Sole source returns activity with speed 8.0 km/h (above threshold 6.0)
+        self.mock_sole.get_activities.return_value = [
+            {
+                "id": "run_restored",
+                "name": "Sole Treadmill Indoor Run",
+                "sport": "RUNNING",
+                "date": "2026-10-13T12:00:00Z",
+                "avg_speed_mps": 2.22,  # 8.0 km/h
+                "duration_seconds": 1800,
+                "distance_meters": 4000,
+            }
+        ]
+
+        updated = self.engine.sync_previously_synced_activities(limit=5)
+        self.assertEqual(updated, 1)
+
+        self.mock_garmin._try_rename_uploaded_activity.assert_called_with(
+            activity_date_str="2026-10-13T12:00:00Z",
+            desired_title="Sole Treadmill Indoor Run",
+            target_sport="RUNNING",
+            retries=1,
+            delay_sec=0,
+            threshold_hours=2,
+        )
+
+        # Database record should be updated to RUNNING
+        recent = self.store.get_recent_synced(1)
+        self.assertEqual(recent[0]["name"], "Sole Treadmill Indoor Run")
+        self.assertEqual(recent[0]["sport"], "RUNNING")
+
 
 if __name__ == "__main__":
     unittest.main()

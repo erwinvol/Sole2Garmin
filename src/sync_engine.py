@@ -39,6 +39,7 @@ class SyncEngine:
                     token_dir=config.sole_token_dir,
                     sample_dir=config.sample_dir,
                     walk_run_threshold_kmh=config.walk_run_threshold_kmh,
+                    unit_system=config.sole_unit_system,
                 )
             else:
                 active_source = StravaClient(
@@ -307,8 +308,16 @@ class SyncEngine:
         logger.info("Verifying %d previously recorded activities in Garmin Connect for correct titles...", len(synced_records))
         updated_count = 0
 
+        # Pre-fetch source activities to determine genuine speed, sport, and titles
+        source_activities = {}
+        try:
+            raw_activities = self.source.get_activities(limit=max(limit, 50))
+            source_activities = {str(a.get("id")): a for a in raw_activities if a.get("id")}
+        except Exception as exc:
+            logger.debug("Could not pre-fetch source activities for title verification: %s", exc)
+
         for record in synced_records:
-            sole_id = record["sole_id"]
+            sole_id = str(record["sole_id"])
             act_date = record.get("activity_date")
             if not act_date:
                 continue
@@ -316,12 +325,36 @@ class SyncEngine:
             current_sport = str(record.get("sport") or "RUNNING").upper()
             stored_name = record.get("name") or ""
 
-            if current_sport == "WALKING" or "walk" in stored_name.lower():
-                target_sport = "WALKING"
-                desired_title = "Sole Treadmill Indoor Walking"
+            act = source_activities.get(sole_id)
+            if act:
+                if float(act.get("avg_speed_mps", 0.0)) > 0:
+                    avg_mps = float(act["avg_speed_mps"])
+                elif float(act.get("duration_seconds", 0.0)) > 0:
+                    avg_mps = float(act.get("distance_meters", 0.0)) / float(act["duration_seconds"])
+                else:
+                    avg_mps = 0.0
+                avg_kmh = avg_mps * 3.6
+
+                act_sport = str(act.get("sport") or "RUNNING").upper()
+                if act_sport in ("RUNNING", "WALKING"):
+                    if self.config.walk_run_threshold_kmh > 0 and avg_kmh <= self.config.walk_run_threshold_kmh:
+                        target_sport = "WALKING"
+                        desired_title = "Sole Treadmill Indoor Walking"
+                    else:
+                        target_sport = "RUNNING"
+                        desired_title = "Sole Treadmill Indoor Run"
+                else:
+                    target_sport = act_sport
+                    desired_title = act.get("name") or "Sole Activity"
             else:
-                target_sport = "RUNNING"
-                desired_title = "Sole Treadmill Indoor Run"
+                # Fallback: respect recorded sport if explicitly WALKING, otherwise default to RUNNING.
+                # Never downgrade based on 'walk' in stored_name because previous runs may have mislabeled titles.
+                if current_sport == "WALKING" and "run" not in stored_name.lower():
+                    target_sport = "WALKING"
+                    desired_title = "Sole Treadmill Indoor Walking"
+                else:
+                    target_sport = "RUNNING"
+                    desired_title = "Sole Treadmill Indoor Run"
 
             success = self.garmin._try_rename_uploaded_activity(
                 activity_date_str=act_date,

@@ -62,6 +62,9 @@ class Config:
     # Default is 6.0 km/h. Set to 0 to disable auto-threshold tagging.
     walk_run_threshold_kmh: float = 6.0
 
+    # Unit system for Sole treadmill ingestion ("imperial" for miles/mph, "metric" for km/kmh)
+    sole_unit_system: str = "imperial"
+
     # Timezone for local wall-clock interpretation and Garmin FIT local_timestamp
     timezone: str = "America/New_York"
 
@@ -118,7 +121,18 @@ class Config:
             device_software_version=float(os.getenv("DEVICE_SOFTWARE_VERSION", "18.16")),
             default_sport=os.getenv("DEFAULT_SPORT", "RUNNING").upper(),
             default_sub_sport=os.getenv("DEFAULT_SUB_SPORT", "TREADMILL").upper(),
-            walk_run_threshold_kmh=float(_clean_env("WALK_RUN_THRESHOLD_KMH", _clean_env("WALKING_SPEED_THRESHOLD_KMH", "6.0")) or 6.0),
+            walk_run_threshold_kmh=(
+                float(_clean_env("WALK_RUN_THRESHOLD_MPH")) * 1.609344
+                if _clean_env("WALK_RUN_THRESHOLD_MPH")
+                else float(_clean_env("WALK_RUN_THRESHOLD_KMH", _clean_env("WALKING_SPEED_THRESHOLD_KMH", "6.0")) or 6.0)
+            ),
+            sole_unit_system=_clean_env(
+                "SOLE_UNIT_SYSTEM",
+                _clean_env(
+                    "UNIT_SYSTEM",
+                    "imperial" if any(p in _clean_env("TIMEZONE", _clean_env("TZ", "America/New_York")).lower() for p in ("america", "us")) else "metric",
+                ),
+            ).lower(),
             timezone=_clean_env("TIMEZONE", _clean_env("TZ", "America/New_York")),
             sample_dir=sample_dir,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

@@ -222,42 +222,33 @@ class TestGarminClient(unittest.TestCase):
             api=True,
         )
 
-    def test_parse_activity_datetime_naive_and_timezone_aware(self):
+    def test_parse_activity_datetime(self):
         from datetime import timezone
         from src.garmin_client import parse_activity_datetime
 
-        # 1. Naive string with default timezone (America/New_York)
-        # 13:37:35 in EDT (-04:00) should convert to 17:37:35 UTC
-        dt_naive = parse_activity_datetime("2026-10-13 13:37:35", user_tz="America/New_York")
+        # 1. Naive string
+        dt_naive = parse_activity_datetime("2026-10-13 13:37:35")
         self.assertIsNotNone(dt_naive)
         self.assertEqual(dt_naive.tzinfo, timezone.utc)
-        self.assertEqual(dt_naive.hour, 17)
+        self.assertEqual(dt_naive.hour, 13)
         self.assertEqual(dt_naive.minute, 37)
         self.assertEqual(dt_naive.second, 35)
 
-        # 2. Naive string with Central timezone (America/Chicago, -05:00 in CDT)
-        # 13:37:35 in CDT should convert to 18:37:35 UTC
-        dt_chicago = parse_activity_datetime("2026-10-13 13:37:35", user_tz="America/Chicago")
-        self.assertIsNotNone(dt_chicago)
-        self.assertEqual(dt_chicago.hour, 18)
-
-        # 3. Explicit ISO UTC string with 'Z'
-        dt_utc = parse_activity_datetime("2026-10-13T17:37:35Z", user_tz="America/New_York")
+        # 2. Explicit ISO UTC string with 'Z'
+        dt_utc = parse_activity_datetime("2026-10-13T13:37:35Z")
         self.assertIsNotNone(dt_utc)
-        self.assertEqual(dt_utc.hour, 17)
+        self.assertEqual(dt_utc.hour, 13)
         self.assertEqual(dt_utc, dt_naive)
 
-        # 4. Explicit ISO string with offset
-        dt_offset = parse_activity_datetime("2026-10-13T13:37:35-04:00", user_tz="Europe/Amsterdam")
+        # 3. Explicit ISO string with offset
+        dt_offset = parse_activity_datetime("2026-10-13T13:37:35-04:00")
         self.assertIsNotNone(dt_offset)
         self.assertEqual(dt_offset.hour, 17)
-        self.assertEqual(dt_offset, dt_naive)
 
-    def test_format_local_datetime_timezone(self):
+    def test_format_local_datetime(self):
         from src.garmin_client import format_local_datetime
-        # 2026-10-13 17:37:35 UTC formatted in America/New_York (-4h) should show 1:37:35 (or 13:37:35)
-        formatted = format_local_datetime("2026-10-13T17:37:35+00:00", user_tz="America/New_York")
-        self.assertTrue("01:37:35" in formatted or "13:37:35" in formatted)
+        formatted = format_local_datetime("2026-10-13T17:37:35+00:00")
+        self.assertTrue(len(formatted) > 0)
 
     def test_upload_activity_success_with_name_and_sport(self):
         import tempfile

@@ -4,10 +4,9 @@ import locale
 import logging
 import os
 import time
-import zoneinfo
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -17,51 +16,13 @@ except Exception:
     pass
 
 
-def get_configured_timezone(tz_name: Optional[Union[str, zoneinfo.ZoneInfo]] = None) -> zoneinfo.ZoneInfo:
-    """Resolve timezone from parameter, environment variables, or fallback to America/New_York."""
-    if isinstance(tz_name, zoneinfo.ZoneInfo):
-        return tz_name
-
-    candidates = [
-        str(tz_name).strip() if tz_name else None,
-        os.getenv("TIMEZONE", "").strip() or None,
-        os.getenv("TZ", "").strip() or None,
-    ]
-    for c in candidates:
-        if c:
-            try:
-                return zoneinfo.ZoneInfo(c)
-            except Exception as exc:
-                logger.debug("Could not parse timezone '%s': %s", c, exc)
-
-    # Fallback to system local timezone if not UTC
-    try:
-        local_tz = datetime.now().astimezone().tzinfo
-        if local_tz and str(local_tz) not in ("UTC", "GMT", "Coordinated Universal Time"):
-            return zoneinfo.ZoneInfo(str(local_tz))
-    except Exception:
-        pass
-
-    return zoneinfo.ZoneInfo("America/New_York")
-
-
-def parse_activity_datetime(date_val: Any, user_tz: Optional[Any] = None) -> Optional[datetime]:
-    """Parse various timestamp representations into a timezone-aware UTC datetime.
-
-    If date_val is a naive string or naive datetime (without timezone offset),
-    it is treated as local wall-clock time in user_tz (defaulting to America/New_York
-    or system timezone) and converted to UTC.
-    If date_val is already timezone-aware or an epoch timestamp, it is normalized to UTC.
-    """
+def parse_activity_datetime(date_val: Any) -> Optional[datetime]:
+    """Parse various timestamp representations into a timezone-aware UTC datetime."""
     if not date_val:
         return None
 
-    target_tz = get_configured_timezone(user_tz)
-
     if isinstance(date_val, datetime):
-        if date_val.tzinfo is None:
-            return date_val.replace(tzinfo=target_tz).astimezone(timezone.utc)
-        return date_val.astimezone(timezone.utc)
+        return date_val.astimezone(timezone.utc) if date_val.tzinfo else date_val.replace(tzinfo=timezone.utc)
 
     # Handle numeric timestamp
     try:
@@ -77,28 +38,10 @@ def parse_activity_datetime(date_val: Any, user_tz: Optional[Any] = None) -> Opt
     if clean_str.endswith("Z"):
         clean_str = clean_str[:-1] + "+00:00"
 
-    # Try formats with explicit timezone offset
     for fmt in (
         "%Y-%m-%dT%H:%M:%S.%f%z",
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%d %H:%M:%S%z",
-    ):
-        try:
-            dt = datetime.strptime(clean_str, fmt)
-            return dt.astimezone(timezone.utc)
-        except (ValueError, TypeError):
-            continue
-
-    try:
-        dt = datetime.fromisoformat(clean_str)
-        if dt.tzinfo is not None:
-            return dt.astimezone(timezone.utc)
-        return dt.replace(tzinfo=target_tz).astimezone(timezone.utc)
-    except (ValueError, TypeError):
-        pass
-
-    # Try naive datetime formats
-    for fmt in (
         "%Y-%m-%dT%H:%M:%S.%f",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
@@ -106,27 +49,40 @@ def parse_activity_datetime(date_val: Any, user_tz: Optional[Any] = None) -> Opt
     ):
         try:
             dt = datetime.strptime(clean_str, fmt)
-            return dt.replace(tzinfo=target_tz).astimezone(timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt
         except (ValueError, TypeError):
             continue
+
+    try:
+        dt = datetime.fromisoformat(clean_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        pass
 
     return None
 
 
-def format_local_datetime(date_val: Any, include_time: bool = True, user_tz: Optional[Any] = None) -> str:
-    """Format an activity datetime, timestamp string, or epoch into local system/configured format.
+def format_local_datetime(date_val: Any, include_time: bool = True) -> str:
+    """Format an activity datetime, timestamp string, or epoch into local system format.
 
-    Converts UTC timestamps to the user/configured timezone and formats according to system locale (%x %X).
+    Converts UTC timestamps to the local system timezone and formats according to system locale (%x %X).
     """
     if not date_val:
         return ""
 
-    dt = parse_activity_datetime(date_val, user_tz=user_tz)
+    dt = parse_activity_datetime(date_val)
     if not dt:
         return str(date_val)
 
-    target_tz = get_configured_timezone(user_tz)
-    local_dt = dt.astimezone(target_tz)
+    local_dt = dt.astimezone()
 
     try:
         fmt = "%x %X" if include_time else "%x"
@@ -143,12 +99,10 @@ class GarminClient:
         username: Optional[str] = None,
         password: Optional[str] = None,
         token_dir: Optional[Path] = None,
-        user_timezone: Optional[str] = None,
     ):
         self.username = username
         self.password = password
         self.token_dir = token_dir or Path.home() / ".garminconnect"
-        self.user_timezone = user_timezone
         self._client: Optional[Any] = None
         self._authenticated = False
         self._activity_types_cache: Optional[List[Dict[str, Any]]] = None
@@ -276,11 +230,10 @@ class GarminClient:
                 if "." in clean_local:
                     clean_local = clean_local.split(".")[0]
                 dt_local_naive = datetime.strptime(clean_local, "%Y-%m-%d %H:%M:%S")
-                target_tz = get_configured_timezone(self.user_timezone)
-                target_local_naive = target_dt.astimezone(target_tz).replace(tzinfo=None)
-                diffs.append(abs((dt_local_naive - target_local_naive).total_seconds()) / 3600.0)
+                target_naive = target_dt.replace(tzinfo=None) if target_dt.tzinfo else target_dt
+                diffs.append(abs((dt_local_naive - target_naive).total_seconds()) / 3600.0)
             except Exception:
-                dt_local = parse_activity_datetime(start_local, user_tz=self.user_timezone)
+                dt_local = parse_activity_datetime(start_local)
                 if dt_local:
                     diffs.append(abs((dt_local - target_dt).total_seconds()) / 3600.0)
 
@@ -306,7 +259,7 @@ class GarminClient:
         """
         self.ensure_authenticated()
 
-        target_dt = parse_activity_datetime(activity_date_str, user_tz=self.user_timezone)
+        target_dt = parse_activity_datetime(activity_date_str)
         if not target_dt:
             logger.warning("Could not parse activity datetime '%s'; skipping Garmin duplicate check.", activity_date_str)
             return False
@@ -514,7 +467,7 @@ class GarminClient:
         """Find the uploaded activity on Garmin Connect matching activity_date_str and update its title and type."""
         self.ensure_authenticated()
 
-        target_dt = parse_activity_datetime(activity_date_str, user_tz=self.user_timezone)
+        target_dt = parse_activity_datetime(activity_date_str)
         if not target_dt:
             logger.warning("Could not parse activity datetime '%s' for Garmin renaming.", activity_date_str)
             return False

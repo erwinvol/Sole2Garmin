@@ -44,13 +44,6 @@ services:
       # Auto Walk vs Run threshold (<= 6.0 km/h: Walking, > 6.0 km/h: Indoor Running)
       - WALK_RUN_THRESHOLD_KMH=6.0
 
-      # Sole treadmill unit system: imperial (miles, mph) or metric (km, km/h)
-      - SOLE_UNIT_SYSTEM=imperial
-
-      # Timezone for local wall-clock interpretation and Garmin Connect FIT synchronization
-      - TIMEZONE=America/New_York
-      - TZ=America/New_York
-
       # Logging level
       - LOG_LEVEL=INFO
     volumes:

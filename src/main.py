@@ -5,12 +5,13 @@ import logging
 import signal
 import sys
 import time
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Optional
 
 from src import __version__
 from src.config import Config
 from src.garmin_client import format_local_datetime
 from src.sync_engine import SyncEngine
+from src.webhook_server import WebhookServer
 
 logger = logging.getLogger(__name__)
 _running = True
@@ -54,23 +55,48 @@ def print_status(config: Config) -> None:
     print("==================================================")
 
 
-def run_daemon(engine: SyncEngine, interval_minutes: int) -> None:
-    """Run synchronization continuously in a background loop."""
-    interval_seconds = max(interval_minutes * 60, 60)
-    logger.info("Starting Sole2Garmin background daemon (Interval: %d min)...", interval_minutes)
-
-    while _running:
+def run_daemon(engine: SyncEngine, interval_minutes: int, config: Optional[Config] = None) -> None:
+    """Run synchronization continuously in a background loop and/or webhook server."""
+    webhook_srv: Optional[WebhookServer] = None
+    if config and config.webhook_enabled:
         try:
-            logger.info("Starting scheduled sync cycle...")
-            engine.run_sync()
+            webhook_srv = WebhookServer(
+                engine=engine,
+                host=config.webhook_host,
+                port=config.webhook_port,
+                webhook_token=config.webhook_token,
+            )
+            webhook_srv.start_background()
         except Exception as exc:
-            logger.exception("Unexpected error in daemon sync cycle: %s", exc)
+            logger.error("Failed to start webhook server: %s", exc)
 
-        logger.info("Sleeping for %d minutes until next poll cycle...", interval_minutes)
-        slept = 0
-        while _running and slept < interval_seconds:
+    if interval_minutes <= 0:
+        logger.info(
+            "Periodic polling disabled (SYNC_INTERVAL_MINUTES=%d). Operating exclusively in on-demand webhook mode.",
+            interval_minutes,
+        )
+        while _running:
             time.sleep(1)
-            slept += 1
+    else:
+        interval_seconds = max(interval_minutes * 60, 60)
+        logger.info("Starting Sole2Garmin background daemon (Interval: %d min)...", interval_minutes)
+
+        while _running:
+            try:
+                logger.info("Starting scheduled sync cycle...")
+                engine.run_sync()
+            except Exception as exc:
+                logger.exception("Unexpected error in daemon sync cycle: %s", exc)
+
+            logger.info("Sleeping for %d minutes until next poll cycle...", interval_minutes)
+            slept = 0
+            while _running and slept < interval_seconds:
+                time.sleep(1)
+                slept += 1
+
+    if webhook_srv:
+        logger.info("Stopping webhook server...")
+        webhook_srv.stop()
 
     logger.info("Sole2Garmin daemon terminated cleanly.")
 
@@ -89,6 +115,7 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Simulate sync without uploading to Garmin Connect or persisting.")
     parser.add_argument("--update-titles", action="store_true", help="Retroactively update titles and categories for previously synced activities on Garmin Connect.")
     parser.add_argument("--daemon", action="store_true", help="Force daemon polling mode (default when no one-off action is passed).")
+    parser.add_argument("--webhook", action="store_true", help="Run standalone webhook server for Home Assistant triggers.")
 
     args = parser.parse_args()
 
@@ -131,8 +158,29 @@ def main() -> None:
         engine.run_sync(dry_run=True)
         return
 
-    # Default to daemon mode
-    run_daemon(engine, config.sync_interval_minutes)
+    if args.webhook:
+        server = WebhookServer(
+            engine=engine,
+            host=config.webhook_host,
+            port=config.webhook_port,
+            webhook_token=config.webhook_token,
+        )
+        logger.info(
+            "Starting standalone webhook server on http://%s:%d (auth: %s)...",
+            config.webhook_host,
+            config.webhook_port,
+            "configured" if config.webhook_token else "none (open)",
+        )
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.stop()
+        return
+
+    # Default to daemon mode (handles polling and/or background webhook)
+    run_daemon(engine, config.sync_interval_minutes, config=config)
 
 
 if __name__ == "__main__":

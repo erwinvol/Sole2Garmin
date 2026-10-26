@@ -68,6 +68,12 @@ class Config:
     # Logging
     log_level: str = "INFO"
 
+    # Webhook server for Home Assistant and external on-demand triggers
+    webhook_enabled: bool = True
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8080
+    webhook_token: str = ""
+
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
@@ -120,6 +126,10 @@ class Config:
             ),
             sample_dir=sample_dir,
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            webhook_enabled=os.getenv("WEBHOOK_ENABLED", "true").lower() in ("true", "1", "yes"),
+            webhook_host=_clean_env("WEBHOOK_HOST", "0.0.0.0"),
+            webhook_port=int(os.getenv("WEBHOOK_PORT", "8080")),
+            webhook_token=_clean_env("WEBHOOK_TOKEN", _clean_env("SYNC_WEBHOOK_TOKEN", "")),
         )
 
     def validate(self) -> None:

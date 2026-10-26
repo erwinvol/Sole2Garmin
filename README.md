@@ -81,6 +81,8 @@ services:
     image: sole2garmin:latest
     container_name: sole2garmin
     restart: unless-stopped
+    ports:
+      - "${WEBHOOK_PORT:-8080}:8080"
     environment:
       # Ingestion Provider: cloud (Sole Fitness / Dyaco API)
       - INGESTION_PROVIDER=cloud
@@ -100,9 +102,14 @@ services:
       - SOLE_TOKEN_DIR=/data/sole_tokens
       - SAMPLE_DIR=/data/sample_activities
 
-      # Sync interval (minutes)
+      # Sync interval (minutes) - Set to 0 to disable polling and use only Home Assistant webhooks
       - SYNC_INTERVAL_MINUTES=60
       - DEVICE_PRODUCT_ID=3943  # 3943 = Epix Gen 2, 4315 = Forerunner 965
+
+      # Webhook Configuration
+      - WEBHOOK_ENABLED=true
+      - WEBHOOK_PORT=8080
+      - WEBHOOK_TOKEN=your_secret_token
     volumes:
       - ./data:/data
 ```
@@ -157,4 +164,81 @@ All settings can be configured via `docker-compose.yml`, environment variables, 
 | `DEVICE_SOFTWARE_VERSION` | `18.16` | Device firmware version reported in FIT header |
 | `DEFAULT_SPORT` | `RUNNING` | Default sport (`RUNNING`, `CYCLING`, `FITNESS_EQUIPMENT`) |
 | `DEFAULT_SUB_SPORT` | `TREADMILL` | Default subsport (`TREADMILL`, `ELLIPTICAL`, `INDOOR_CYCLING`) |
+| `WALK_RUN_THRESHOLD_KMH` | `6.0` | Speed threshold for auto-tagging walking vs indoor running |
+| `WEBHOOK_ENABLED` | `true` | Enable lightweight HTTP webhook server for on-demand triggers |
+| `WEBHOOK_PORT` | `8080` | Port for the webhook server |
+| `WEBHOOK_HOST` | `0.0.0.0` | Bind host for the webhook server |
+| `WEBHOOK_TOKEN` | *(empty)* | Secret bearer token for authenticating webhook requests |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+
+---
+
+## 🏠 Home Assistant On-Demand Webhook Trigger
+
+To eliminate unnecessary API calls to Sole and Garmin, you can trigger a sync exclusively when your workout finishes instead of continuous polling.
+
+### 1. Configure Sole2Garmin
+In your `.env` or `docker-compose.yml` / `dockercompose.yaml`:
+```bash
+# Set polling to 0 to disable timed API pings
+SYNC_INTERVAL_MINUTES=0
+
+# Configure webhook listener
+WEBHOOK_ENABLED=true
+WEBHOOK_PORT=8080
+WEBHOOK_TOKEN=your_secure_webhook_token_here
+```
+
+### 2. Configure Home Assistant (`secrets.yaml` & `configuration.yaml`)
+
+In `secrets.yaml`:
+```yaml
+sole_webhook_token: "your_secure_webhook_token_here"
+```
+
+In `configuration.yaml`:
+```yaml
+rest_command:
+  trigger_sole_sync:
+    url: "http://<sole2garmin-host-ip>:8080/sync"
+    method: POST
+    headers:
+      X-Webhook-Token: "!secret sole_webhook_token"
+    timeout: 30
+```
+
+*(Optional)* Monitor Sole2Garmin health/status with a REST sensor in Home Assistant:
+```yaml
+sensor:
+  - platform: rest
+    name: "Sole2Garmin Status"
+    resource: "http://<sole2garmin-host-ip>:8080/health"
+    value_template: "{{ value_json.status }}"
+    json_attributes:
+      - is_syncing
+      - last_sync_time
+      - uptime_seconds
+    scan_interval: 300
+```
+
+### 3. Home Assistant Automation Example (Smart Plug Power Sensing)
+
+Trigger when your treadmill smart plug reports power dropping below 20W for 2 minutes after a workout:
+
+```yaml
+alias: "Sole Treadmill: Sync on Workout Finish"
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.treadmill_plug_power
+    below: 20
+    for:
+      minutes: 2
+action:
+  - service: rest_command.trigger_sole_sync
+```
+
+### 4. Manual Verification via `curl`
+```bash
+curl -X POST http://<sole2garmin-host-ip>:8080/sync \
+  -H "X-Webhook-Token: your_secure_webhook_token_here"
+```

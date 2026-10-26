@@ -1,0 +1,59 @@
+services:
+  sole2garmin:
+    build: .
+    image: sole2garmin:latest
+    container_name: sole2garmin
+    restart: unless-stopped
+    ports:
+      - "${WEBHOOK_PORT:-8080}:8080"
+    environment:
+      # Ingestion Provider: cloud (Sole / Dyaco API), strava, or local
+      - INGESTION_PROVIDER=cloud
+
+      # Sole / Dyaco Credentials (Option B: Direct SOLE+ Cloud API)
+      - SOLE_EMAIL=your_sole_email@example.com
+      - SOLE_PASSWORD=your_sole_password
+      - SOLE_BASE_URL=https://sole-homeplus.dyacocloud.com
+
+      # (Optional) Strava Credentials (if using Strava bridge instead)
+      # - STRAVA_CLIENT_ID=your_strava_client_id
+      # - STRAVA_CLIENT_SECRET=your_strava_client_secret
+      # - STRAVA_REFRESH_TOKEN=your_strava_refresh_token
+      # - STRAVA_FILTER_SOLE_ONLY=true
+
+      # Garmin Connect Credentials (optional if tokens exist in data/garmin_tokens)
+      - GARMIN_USERNAME=your_garmin_email@example.com
+      - GARMIN_PASSWORD=your_garmin_password
+
+      # Storage directories inside container
+      - DATA_DIR=/data
+      - GARMIN_TOKEN_DIR=/data/garmin_tokens
+      - STRAVA_TOKEN_DIR=/data/strava_tokens
+      - SAMPLE_DIR=/data/sample_activities
+
+      # Sync Configuration (Set to 0 to disable periodic polling and rely exclusively on Home Assistant webhooks)
+      - SYNC_INTERVAL_MINUTES=60
+      - SYNC_BATCH_SIZE=10
+      - CHECK_DUPLICATES=true
+      - DUPLICATE_THRESHOLD_HOURS=2
+
+      # Webhook Configuration (On-Demand Sync Trigger from Home Assistant)
+      - WEBHOOK_ENABLED=${WEBHOOK_ENABLED:-true}
+      - WEBHOOK_PORT=8080
+      - WEBHOOK_HOST=0.0.0.0
+      - WEBHOOK_TOKEN=${WEBHOOK_TOKEN:-}
+
+      - SPOOF_GARMIN_DEVICE=true
+      - DEVICE_PRODUCT_ID=3943
+      - DEVICE_SOFTWARE_VERSION=18.16
+      - DEFAULT_SPORT=RUNNING
+      - DEFAULT_SUB_SPORT=TREADMILL
+
+      # Auto Walk vs Run threshold (<= 6.0 km/h: Walking, > 6.0 km/h: Indoor Running)
+      - WALK_RUN_THRESHOLD_KMH=6.0
+
+      # Logging level
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/data
+      - ./src:/app/src:ro

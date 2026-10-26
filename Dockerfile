@@ -35,5 +35,7 @@ COPY src/ /app/src/
 
 VOLUME ["/data"]
 
+EXPOSE 8080
+
 ENTRYPOINT ["python", "-m", "src.main"]
 CMD ["--daemon"]

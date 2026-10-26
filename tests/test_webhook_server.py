@@ -78,7 +78,7 @@ class TestWebhookServer(unittest.TestCase):
 
     def test_sync_authorized_header(self):
         req = Request(
-            f"{self.base_url}/sync",
+            f"{self.base_url}/sync?wait=true",
             method="POST",
             data=json.dumps({"sync_latest": True, "dry_run": False}).encode(),
             headers={"X-Webhook-Token": "test_secret_token", "Content-Type": "application/json"},
@@ -93,7 +93,7 @@ class TestWebhookServer(unittest.TestCase):
 
     def test_sync_authorized_bearer(self):
         req = Request(
-            f"{self.base_url}/sync",
+            f"{self.base_url}/sync?wait=true",
             method="POST",
             data=b"{}",
             headers={"Authorization": "Bearer test_secret_token"},
@@ -105,7 +105,7 @@ class TestWebhookServer(unittest.TestCase):
 
     def test_sync_authorized_query_param(self):
         req = Request(
-            f"{self.base_url}/sync?token=test_secret_token",
+            f"{self.base_url}/sync?token=test_secret_token&wait=true",
             method="POST",
             data=b"{}",
         )
@@ -114,18 +114,19 @@ class TestWebhookServer(unittest.TestCase):
             data = json.loads(resp.read().decode())
             self.assertEqual(data["status"], "success")
 
-    def test_sync_async_accepted(self):
-        # When wait=false, it runs asynchronously in background and returns 202
+    def test_sync_async_default_accepted(self):
+        # By default, runs asynchronously in background and returns 200 accepted
         req = Request(
-            f"{self.base_url}/sync?wait=false",
+            f"{self.base_url}/sync",
             method="POST",
             data=b"{}",
             headers={"X-Webhook-Token": "test_secret_token"},
         )
         with self.opener.open(req) as resp:
-            self.assertEqual(resp.status, 202)
+            self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode())
             self.assertEqual(data["status"], "accepted")
+            self.assertEqual(data["message"], "Sync initiated in background")
 
     def test_sync_concurrency_lock_busy(self):
         # Simulate active lock
@@ -141,6 +142,24 @@ class TestWebhookServer(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 429)
         data = json.loads(ctx.exception.read().decode())
         self.assertEqual(data["status"], "busy")
+
+    def test_broken_pipe_error_suppressed(self):
+        from unittest.mock import MagicMock
+        from src.webhook_server import WebhookHandler
+
+        handler = WebhookHandler.__new__(WebhookHandler)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.wfile = MagicMock()
+        handler.wfile.write.side_effect = BrokenPipeError(32, "Broken pipe")
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+
+        # Should not raise BrokenPipeError
+        try:
+            handler._send_json(200, {"status": "ok"})
+        except BrokenPipeError:
+            self.fail("_send_json raised BrokenPipeError unexpectedly")
 
     def test_not_found(self):
         req = Request(f"{self.base_url}/nonexistent")
@@ -171,7 +190,7 @@ class TestWebhookServerOpenMode(unittest.TestCase):
         self.server.stop()
 
     def test_open_mode_allows_sync_without_token(self):
-        req = Request(f"{self.base_url}/sync", method="POST", data=b"{}")
+        req = Request(f"{self.base_url}/sync?wait=true", method="POST", data=b"{}")
         with self.opener.open(req) as resp:
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode())

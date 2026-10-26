@@ -21,19 +21,29 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     server: "WebhookServer"  # Type hint for parent server reference
 
+    def handle(self) -> None:
+        """Handle incoming request with error suppression for client disconnects."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError) as err:
+            logger.debug("Client connection closed abruptly: %s", err)
+
     def log_message(self, format: str, *args: Any) -> None:
         """Route HTTP server logs through Python logging instead of sys.stderr."""
         logger.debug("%s - - [%s] " + format, self.address_string(), self.log_date_time_string(), *args)
 
     def _send_json(self, status_code: int, data: Dict[str, Any]) -> None:
-        """Helper to send a JSON response."""
-        response_bytes = json.dumps(data, indent=2).encode("utf-8")
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(response_bytes)))
-        self.send_header("X-Service", f"Sole2Garmin-Webhook/{__version__}")
-        self.end_headers()
-        self.wfile.write(response_bytes)
+        """Helper to send a JSON response, handling client disconnects gracefully."""
+        try:
+            response_bytes = json.dumps(data, indent=2).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response_bytes)))
+            self.send_header("X-Service", f"Sole2Garmin-Webhook/{__version__}")
+            self.end_headers()
+            self.wfile.write(response_bytes)
+        except (BrokenPipeError, ConnectionResetError) as err:
+            logger.debug("Client %s disconnected before HTTP response could be sent: %s", self.address_string(), err)
 
     def _get_auth_token(self, query_params: Dict[str, Any]) -> Optional[str]:
         """Extract authentication token from headers or query parameters."""
@@ -139,7 +149,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         sync_latest = _parse_bool(body_data.get("sync_latest", query_params.get("sync_latest")), True)
         dry_run = _parse_bool(body_data.get("dry_run", query_params.get("dry_run")), False)
-        wait_for_completion = _parse_bool(body_data.get("wait", query_params.get("wait")), True)
+        # Default to background asynchronous execution so Home Assistant REST commands never time out
+        wait_for_completion = _parse_bool(body_data.get("wait", query_params.get("wait")), False)
 
         # Concurrency / debounce guard
         if not self.server.acquire_sync_lock():
@@ -186,7 +197,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             # Run asynchronously in background thread
             bg_thread = threading.Thread(target=_execute_sync, daemon=True)
             bg_thread.start()
-            self._send_json(202, {
+            self._send_json(200, {
                 "status": "accepted",
                 "message": "Sync initiated in background",
                 "timestamp": datetime.now(timezone.utc).isoformat(),

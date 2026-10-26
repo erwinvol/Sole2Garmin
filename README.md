@@ -203,7 +203,7 @@ rest_command:
     url: "http://<sole2garmin-host-ip>:8080/sync"
     method: POST
     headers:
-      X-Webhook-Token: "!secret sole_webhook_token"
+      X-Webhook-Token: !secret sole_webhook_token
     timeout: 30
 ```
 

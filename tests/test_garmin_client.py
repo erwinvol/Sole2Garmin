@@ -223,24 +223,37 @@ class TestGarminClient(unittest.TestCase):
         )
 
     def test_parse_activity_datetime(self):
-        from datetime import timezone
-        from src.garmin_client import parse_activity_datetime
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        from src.garmin_client import get_host_timezone, parse_activity_datetime
 
-        # 1. Naive string
+        # 1. Naive string localized to host timezone
         dt_naive = parse_activity_datetime("2026-10-13 13:37:35")
         self.assertIsNotNone(dt_naive)
         self.assertEqual(dt_naive.tzinfo, timezone.utc)
-        self.assertEqual(dt_naive.hour, 13)
-        self.assertEqual(dt_naive.minute, 37)
-        self.assertEqual(dt_naive.second, 35)
+        host_tz = get_host_timezone()
+        expected_utc = datetime(2026, 10, 13, 13, 37, 35, tzinfo=host_tz).astimezone(timezone.utc)
+        self.assertEqual(dt_naive, expected_utc)
 
-        # 2. Explicit ISO UTC string with 'Z'
-        dt_utc = parse_activity_datetime("2026-10-13T13:37:35Z")
+        # 2. Testing explicit timezone overrides via TZ environment variable
+        with patch.dict("os.environ", {"TZ": "America/New_York"}):
+            dt_ny = parse_activity_datetime("2026-10-13 13:37:35")
+            self.assertIsNotNone(dt_ny)
+            self.assertEqual(dt_ny.hour, 17)
+            self.assertEqual(dt_ny.minute, 37)
+            self.assertEqual(dt_ny.second, 35)
+
+        with patch.dict("os.environ", {"TZ": "Europe/Amsterdam"}):
+            dt_ams = parse_activity_datetime("2026-10-13 13:37:35")
+            self.assertIsNotNone(dt_ams)
+            self.assertEqual(dt_ams.hour, 11)
+
+        # 3. Explicit ISO UTC string with 'Z'
+        dt_utc = parse_activity_datetime("2026-10-13T17:37:35Z")
         self.assertIsNotNone(dt_utc)
-        self.assertEqual(dt_utc.hour, 13)
-        self.assertEqual(dt_utc, dt_naive)
+        self.assertEqual(dt_utc.hour, 17)
 
-        # 3. Explicit ISO string with offset
+        # 4. Explicit ISO string with offset
         dt_offset = parse_activity_datetime("2026-10-13T13:37:35-04:00")
         self.assertIsNotNone(dt_offset)
         self.assertEqual(dt_offset.hour, 17)

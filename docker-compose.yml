@@ -52,8 +52,13 @@ services:
       # Auto Walk vs Run threshold (<= 6.0 km/h: Walking, > 6.0 km/h: Indoor Running)
       - WALK_RUN_THRESHOLD_KMH=6.0
 
+      # Timezone configuration (defaults to host system timezone)
+      - TZ=${TZ:-}
+
       # Logging level
       - LOG_LEVEL=INFO
     volumes:
       - ./data:/data
       - ./src:/app/src:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro

@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from fit_tool.fit_file import FitFile
 from fit_tool.profile.messages.activity_message import ActivityMessage
@@ -101,6 +102,15 @@ class TestFitBuilder(unittest.TestCase):
                     self.assertIsNotNone(msg.timestamp)
                     self.assertEqual(msg.num_sessions, 1)
                     self.assertIn(msg.type, (Activity.MANUAL, Activity.MANUAL.value))
+                    self.assertIsNotNone(msg.local_timestamp)
+                    FIT_EPOCH_S = 631065600
+                    utc_fit_s = int(msg.timestamp / 1000.0) - FIT_EPOCH_S
+                    from src.garmin_client import get_host_timezone
+                    host_tz = get_host_timezone()
+                    end_dt_utc = datetime.fromtimestamp(msg.timestamp / 1000.0, tz=timezone.utc)
+                    end_dt_local = end_dt_utc.astimezone(host_tz)
+                    expected_offset = int(end_dt_local.utcoffset().total_seconds()) if end_dt_local.utcoffset() else 0
+                    self.assertEqual(msg.local_timestamp - utc_fit_s, expected_offset)
 
             self.assertTrue(found_file_id)
             self.assertTrue(found_sport)
@@ -234,7 +244,7 @@ class TestFitBuilder(unittest.TestCase):
             FitBuilder.cleanup_file(out_path)
 
     def test_build_fit_from_activity_naive_date(self):
-        """Test naive date string from Sole console (e.g. 13:37:35) is parsed directly."""
+        """Test naive date string from Sole console (e.g. 13:37:35) is localized to host timezone and converted to UTC."""
         builder = FitBuilder(device_product_id=3943)
         activity = {
             "id": "act_naive_01",
@@ -255,10 +265,19 @@ class TestFitBuilder(unittest.TestCase):
 
             file_id = next(r.message for r in fit_file.records if isinstance(r.message, FileIdMessage))
             from datetime import datetime, timezone
+            from src.garmin_client import get_host_timezone
+            host_tz = get_host_timezone()
+            expected_dt = datetime(2026, 10, 13, 13, 37, 35, tzinfo=host_tz).astimezone(timezone.utc)
             dt = datetime.fromtimestamp(file_id.time_created / 1000.0, tz=timezone.utc)
-            self.assertEqual(dt.hour, 13)
-            self.assertEqual(dt.minute, 37)
-            self.assertEqual(dt.second, 35)
+            self.assertEqual(dt, expected_dt)
+
+            act_msg = next(r.message for r in fit_file.records if isinstance(r.message, ActivityMessage))
+            self.assertIsNotNone(act_msg.local_timestamp)
+            FIT_EPOCH_S = 631065600
+            utc_fit_s = int(act_msg.timestamp / 1000.0) - FIT_EPOCH_S
+            end_dt_local = datetime.fromtimestamp(act_msg.timestamp / 1000.0, tz=timezone.utc).astimezone(host_tz)
+            expected_offset = int(end_dt_local.utcoffset().total_seconds()) if end_dt_local.utcoffset() else 0
+            self.assertEqual(act_msg.local_timestamp - utc_fit_s, expected_offset)
         finally:
             FitBuilder.cleanup_file(out_path)
 
